@@ -1,0 +1,19 @@
+# secrets
+.env
+*.key
+
+# resume files and storage (real candidate data)
+uploads/
+storage/
+sample_resumes/
+*.pdf
+*.docx
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+
+
