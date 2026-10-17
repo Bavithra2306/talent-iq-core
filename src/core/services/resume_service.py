@@ -36,7 +36,7 @@ from src.core.prompts import resume_extraction as prompt
 from src.core.services import embedding_service
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import ParsedDocument, detect_file_type, parser
-from src.core.services.embedding_service import EmbeddingError
+from src.core.services.embedding_service import EmbeddingError, EmbeddingQuotaExceeded
 from src.core.services.jd_service import clean_skills
 from src.core.services.llm_client import LLMError, llm
 from src.core.services.storage_service import storage
@@ -478,13 +478,36 @@ async def _embed_in_background(batch_id: str, user_id: uuid.UUID) -> None:
         except Exception:
             logger.exception("background embedding failed")
             return
+        output = {"embeddings": "complete" if left == 0 else "incomplete", "pending": left}
+        if left:
+            quota = await embedding_service.quota_status()
+            if quota["paused"]:
+                output.update(embeddings="paused", resumes_at=quota["resumes_at"])
         await log_event(
             user_id=user_id, category=ActionCategory.EXTRACTION,
             action=Action.EXTRACTION_COMPLETED,
             input_data=_batch_input(batch_id),
-            output_data={"embeddings": "complete" if left == 0 else "incomplete", "pending": left},
+            output_data=output,
             start_time=started,
         )
+
+
+async def backfill_loop() -> None:
+    """Every few minutes, embed resumes still missing vectors (e.g. after the daily quota resets)."""
+    while True:
+        await asyncio.sleep(settings.embedding_backfill_minutes * 60)
+        try:
+            if _embed_lock.locked() or (await embedding_service.quota_status())["paused"]:
+                continue
+            if await count_missing_embeddings() == 0:
+                continue
+            async with _embed_lock:
+                left = await embed_missing(rounds=2)
+            logger.info("embedding backfill done; %d still pending", left)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("embedding backfill failed")
 
 
 async def embed_missing(rounds: int = 3, chunk_resumes: int = 25, pause_seconds: float = 20) -> int:
@@ -518,6 +541,11 @@ async def embed_missing(rounds: int = 3, chunk_resumes: int = 25, pause_seconds:
             texts = [t for _, _, skills, roles in chunk for t in (skills, roles) if t]
             try:
                 vectors = iter(await embedding_service.embed_texts(texts))
+            except EmbeddingQuotaExceeded as exc:
+                # Daily quota used up: stop; the backfill loop resumes after the reset.
+                logger.warning("embeddings paused: %s", exc)
+                index = chunks.index(chunk)
+                return sum(len(c) for c in failed_chunks + chunks[index:])
             except EmbeddingError as exc:
                 logger.warning("embedding chunk of %d resumes failed: %s", len(chunk), exc)
                 failed_chunks.append(chunk)

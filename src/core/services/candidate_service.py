@@ -57,6 +57,12 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
     stage = stage_rows[-1].stage.value if stage_rows else PipelineStage.CREATED.value
 
     pending = await resume_service.count_missing_embeddings()
+    note = None
+    if pending:
+        quota = await resume_service.embedding_service.quota_status()
+        note = (f"Daily embedding quota reached; the remaining {pending} resume(s) get vectors "
+                f"after {quota['resumes_at']}. Matching still works meanwhile."
+                if quota["paused"] else f"{pending} resume(s) are waiting for embeddings.")
     live = resume_service.progress.get(batch_id)
     failures = [
         RejectedFile(filename=json.loads(r.input_data).get("filename", "?"), reason=r.output_data or "")
@@ -72,13 +78,13 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
         return BatchStatus(
             batch_id=batch_id, stage=live.stage, finished=False, total=live.total,
             saved=live.saved, failed=live.failed, failures=failures, events=events,
-            embeddings_pending=pending,
+            embeddings_pending=pending, embeddings_note=note,
             seconds=round(time.monotonic() - live.started_at, 1),
         )
     return BatchStatus(
         batch_id=batch_id, stage=stage, finished=bool(summary),
         total=summary.get("total"), saved=summary.get("saved"), failed=summary.get("failed"),
-        seconds=summary.get("seconds"), embeddings_pending=pending,
+        seconds=summary.get("seconds"), embeddings_pending=pending, embeddings_note=note,
         failures=failures, events=events,
     )
 

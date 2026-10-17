@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 768  # columns are vector(768); change both together
     embedding_batch_size: int = 50
+    embedding_daily_limit: int = 1000  # Gemini free tier: texts per day
+    embedding_quota_timezone: str = "UTC"  # day boundary of that quota
+    display_timezone: str = "Asia/Kolkata"  # how reset times are shown to users
+    embedding_backfill_minutes: int = 20  # how often pending embeddings are retried
 
     # Resume ingestion
     parse_workers: int = 4  # parser worker processes

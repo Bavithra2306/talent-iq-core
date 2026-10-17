@@ -8,6 +8,9 @@ import asyncio
 import logging
 import math
 import random
+import re
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import openai
 from openai import AsyncOpenAI
@@ -19,9 +22,98 @@ logger = logging.getLogger("talentiq.embeddings")
 _client: AsyncOpenAI | None = None
 _semaphore = asyncio.Semaphore(2)
 
+# Gemini's free daily quota: every text counts. Google's retry hints show it resetting
+# at 00:00 UTC (the AI Studio page says midnight Pacific); the zone is configurable.
+QUOTA_TZ = ZoneInfo(settings.embedding_quota_timezone)
+DISPLAY_TZ = ZoneInfo(settings.display_timezone)
+_paused_until: datetime | None = None  # set when Google says the daily quota is used up
+_sent: dict[date, int] = {}  # texts sent per quota day (in this process)
+_budget_lock = asyncio.Lock()
+
 
 class EmbeddingError(Exception):
     pass
+
+
+class EmbeddingQuotaExceeded(EmbeddingError):
+    """The daily embedding quota is used up; work resumes at `resume_at`."""
+
+    def __init__(self, resume_at: datetime):
+        self.resume_at = resume_at
+        super().__init__(f"Daily embedding quota reached; resumes after {format_time(resume_at)}.")
+
+
+# ---------- daily budget ----------
+
+def _quota_today() -> date:
+    return datetime.now(QUOTA_TZ).date()
+
+
+def next_reset() -> datetime:
+    """Next quota reset (midnight in the quota time zone), as a UTC datetime."""
+    tomorrow = _quota_today() + timedelta(days=1)
+    return datetime.combine(tomorrow, time(0), QUOTA_TZ).astimezone(timezone.utc)
+
+
+def format_time(moment: datetime) -> str:
+    return moment.astimezone(DISPLAY_TZ).strftime("%Y-%m-%d %H:%M %Z")
+
+
+async def _used_today_from_db() -> int:
+    """Texts embedded today according to the database (survives restarts)."""
+    from sqlalchemy import func, select
+
+    from src.data.clients.postgres import AsyncSessionLocal
+    from src.data.models.job_embedding import JobEmbedding
+    from src.data.models.resume_embedding import ResumeEmbedding
+
+    start = datetime.combine(_quota_today(), time(0), QUOTA_TZ)
+    async with AsyncSessionLocal() as db:
+        resumes = (await db.execute(
+            select(func.count()).where(ResumeEmbedding.created_at >= start)
+        )).scalar_one()
+        jobs = (await db.execute(
+            select(func.count()).where(func.coalesce(JobEmbedding.updated_at, JobEmbedding.created_at) >= start)
+        )).scalar_one()
+    return resumes + 3 * jobs  # a job embeds up to three texts
+
+
+async def quota_status() -> dict:
+    used = max(_sent.get(_quota_today(), 0), await _used_today_from_db())
+    paused = _paused_until is not None and datetime.now(timezone.utc) < _paused_until
+    return {
+        "daily_limit": settings.embedding_daily_limit,
+        "used_today": used,
+        "remaining_today": 0 if paused else max(0, settings.embedding_daily_limit - used),
+        "paused": paused,
+        "resumes_at": format_time(_paused_until if paused else next_reset()),
+    }
+
+
+async def _reserve(count: int) -> None:
+    """Raise EmbeddingQuotaExceeded instead of sending a request that can't succeed today."""
+    global _paused_until
+    async with _budget_lock:
+        now = datetime.now(timezone.utc)
+        if _paused_until is not None and now < _paused_until:
+            raise EmbeddingQuotaExceeded(_paused_until)
+        today = _quota_today()
+        if today not in _sent:
+            _sent.clear()
+            _sent[today] = await _used_today_from_db()
+        if _sent[today] + count > settings.embedding_daily_limit:
+            _paused_until = next_reset()
+            raise EmbeddingQuotaExceeded(_paused_until)
+        _sent[today] += count
+
+
+def _retry_delay_seconds(message: str) -> float | None:
+    """Parse Google's 'Please retry in 6h11m51.2s' hint."""
+    match = re.search(r"retry in\s*(?:(\d+)h)?\s*(?:(\d+)m(?!s))?\s*(?:([\d.]+)s)?", message)
+    if not match or not any(match.groups()):
+        return None
+    hours, minutes, seconds = (float(g) if g else 0.0 for g in match.groups())
+    return hours * 3600 + minutes * 60 + seconds
 
 
 def model_version() -> str:
@@ -48,6 +140,8 @@ def _normalize(vector: list[float]) -> list[float]:
 
 
 async def _embed_batch(texts: list[str], attempts: int = 4) -> list[list[float]]:
+    global _paused_until
+    await _reserve(len(texts))
     last: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
@@ -64,8 +158,17 @@ async def _embed_batch(texts: list[str], attempts: int = 4) -> list[list[float]]
             ):
                 raise EmbeddingError("Unexpected embedding response shape.")
             return [_normalize(v) for v in vectors]
-        except (openai.RateLimitError, openai.APITimeoutError, openai.APIConnectionError,
-                openai.InternalServerError) as exc:
+        except openai.RateLimitError as exc:
+            delay = _retry_delay_seconds(str(exc))
+            if delay is not None and delay > 120:
+                # A daily quota, not a per-minute one: retrying now only wastes time.
+                _paused_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
+                logger.warning("embedding daily quota reached; paused until %s", format_time(_paused_until))
+                raise EmbeddingQuotaExceeded(_paused_until) from exc
+            last = exc
+            logger.warning("embedding attempt %d rate-limited", attempt)
+            await asyncio.sleep(min(4 * attempt, 20) + random.random())
+        except (openai.APITimeoutError, openai.APIConnectionError, openai.InternalServerError) as exc:
             last = exc
             logger.warning("embedding attempt %d failed: %s", attempt, type(exc).__name__)
             await asyncio.sleep(min(4 * attempt, 20) + random.random())

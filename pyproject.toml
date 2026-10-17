@@ -19,7 +19,9 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.1.4",
     "torch",
     "torchvision",
+    "tzdata>=2024.1",
     "uvicorn[standard]>=0.54.0",
+    "xlsxwriter>=3.2.0",
 ]
 
 # CPU-only PyTorch for Docling (avoids multi-GB CUDA wheels in the image)

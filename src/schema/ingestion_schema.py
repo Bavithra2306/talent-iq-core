@@ -36,5 +36,6 @@ class BatchStatus(BaseModel):
     failed: int | None = None
     seconds: float | None = None
     embeddings_pending: int | None = None
+    embeddings_note: str | None = None
     failures: list[RejectedFile] = []
     events: list[BatchEvent]
