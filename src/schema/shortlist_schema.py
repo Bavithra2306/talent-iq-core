@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -68,6 +69,9 @@ class ShortlistEntry(BaseModel):
     explanation: dict | None = None
     weights_used: dict | None = None
     notes_by_recruiter: str | None = None
+    shared_by: uuid.UUID | None = None
+    shared_to: uuid.UUID | None = None
+    job_title: str | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -109,3 +113,47 @@ class LogEntry(BaseModel):
 class LogListResponse(BaseModel):
     items: list[LogEntry]
     total: int
+
+
+class NotesUpdate(BaseModel):
+    notes: str | None = Field(default=None, max_length=2000, description="e.g. 'strong backend, overqualified'")
+
+
+class ShortlistToggle(BaseModel):
+    shortlisted: bool
+
+
+class ShareRequest(BaseModel):
+    hiring_manager_id: uuid.UUID
+    entry_ids: list[uuid.UUID] | None = Field(
+        default=None, description="default: every shortlisted candidate of the job")
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ShareResult(BaseModel):
+    shared: int
+    skipped: list[dict] = []
+
+
+class DecisionRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class ShareBackRequest(BaseModel):
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class ShareBackResult(BaseModel):
+    job_id: uuid.UUID
+    approved: int
+    rejected: int
+    interview_scheduled: int
+    pending: int
+
+
+class ReviewEvent(BaseModel):
+    at: datetime
+    action: str | None
+    user_id: uuid.UUID | None
+    detail: dict | str | None = None

@@ -9,6 +9,9 @@ class Settings(BaseSettings):
 
     database_url: str
 
+    # Auth service (for the user directory: picking a hiring manager to share with).
+    auth_service_url: str = "http://auth:8000"
+
     # Must match the auth service so access cookies can be verified here.
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"

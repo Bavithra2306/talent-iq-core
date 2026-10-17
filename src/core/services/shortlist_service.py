@@ -65,7 +65,8 @@ def _entry(row: MatchingShortlisting, candidate: Candidate, skills: list[str] | 
         category=candidate.category, total_years_experience=_f(candidate.total_years_experience),
         skills=skills or [], status=row.status, rank=rank, total_score=total, scores=scores,
         breakdown=breakdown, explanation=explanation, weights_used=weights.as_dict(),
-        notes_by_recruiter=row.notes_by_recruiter, created_at=row.created_at, updated_at=row.updated_at,
+        notes_by_recruiter=row.notes_by_recruiter, shared_by=row.shared_by, shared_to=row.shared_to,
+        created_at=row.created_at, updated_at=row.updated_at,
     )
 
 

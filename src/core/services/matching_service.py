@@ -461,8 +461,9 @@ async def _persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[
 
 
 def _set_shortlist_status(row: MatchingShortlisting, shortlisted: bool) -> None:
-    """Only touch statuses the engine owns; approvals/rejections from reviewers stay."""
-    if row.status in (CandidateStatus.SOURCED, CandidateStatus.SHORTLISTED):
+    """Only touch statuses the engine owns: approvals/rejections stay, and so does
+    anything already shared with a hiring manager."""
+    if row.shared_to is None and row.status in (CandidateStatus.SOURCED, CandidateStatus.SHORTLISTED):
         row.status = CandidateStatus.SHORTLISTED if shortlisted else CandidateStatus.SOURCED
 
 

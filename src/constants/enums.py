@@ -76,3 +76,11 @@ class Action(str, enum.Enum):
     SHORTLIST_EXPORT_STARTED = "shortlist_export_started"
     SHORTLIST_EXPORT_COMPLETED = "shortlist_export_completed"
     SHORTLIST_EXPORT_FAILED = "shortlist_export_failed"
+    # review (recruiter <-> hiring manager)
+    CANDIDATE_REMOVED_FROM_SHORTLIST = "candidate_removed_from_shortlist"
+    NOTES_UPDATED = "notes_updated"
+    SHORTLIST_SHARED = "shortlist_shared"
+    CANDIDATE_APPROVED = "candidate_approved"
+    CANDIDATE_REJECTED = "candidate_rejected"
+    INTERVIEW_SCHEDULED = "interview_scheduled"
+    SHORTLIST_RETURNED = "shortlist_returned"
