@@ -29,3 +29,25 @@ class CandidateUpdate(CandidateBase):
 
 class CandidateRead(CandidateBase, AuditRead):
     current_resume_id: uuid.UUID
+
+
+class CandidateListItem(CandidateRead):
+    skills: list[str] = []
+    source_site: str | None = None
+
+
+class CandidateListResponse(BaseModel):
+    items: list[CandidateListItem]
+    total: int
+
+
+class CandidateDetail(CandidateListItem):
+    education: list[dict] | dict | None = None
+    roles_and_years: list[dict] | dict | None = None
+    extraction_model: str | None = None
+    file_name: str | None = None
+
+
+class CategoryCount(BaseModel):
+    category: str | None
+    count: int

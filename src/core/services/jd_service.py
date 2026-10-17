@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.auth_dependency import CurrentUser
 from src.config.settings import settings
 from src.constants.enums import Action, ActionCategory, FileType, JobStatus, PipelineStage
+from src.constants.categories import normalize_category
 from src.core.prompts import jd_extraction
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import parser
+from src.core.services.job_embedding_service import refresh_job_embedding
 from src.core.services.llm_client import LLMError, llm
 from src.core.services.storage_service import storage
 from src.data.models.document import Document
@@ -236,6 +238,7 @@ async def extract_jd(
         )
 
     draft = extraction.job
+    draft.category = normalize_category(draft.category)
     draft.skills, draft.nice_to_have_skills = split_skill_lists(
         draft.skills, draft.nice_to_have_skills
     )
@@ -258,6 +261,7 @@ async def create_job(db: AsyncSession, user: CurrentUser, data: JobCreate) -> Jo
     data.skills, data.nice_to_have_skills = split_skill_lists(
         data.skills, data.nice_to_have_skills
     )
+    data.category = normalize_category(data.category)
 
     if data.jd_id is not None:
         document = await db.get(Document, data.jd_id)
@@ -295,6 +299,7 @@ async def create_job(db: AsyncSession, user: CurrentUser, data: JobCreate) -> Jo
     db.add(ScoringConfig(job_id=job.id, created_by=user.id))
     await db.commit()
     await db.refresh(job)
+    await refresh_job_embedding(db, job, user.id)
 
     await log_event(
         user_id=user.id, stage=PipelineStage.CREATED, job_id=job.id,
@@ -341,6 +346,8 @@ async def update_job(
 ) -> Job:
     job = await get_job(db, job_id)
     changes = data.model_dump(exclude_unset=True)
+    if "category" in changes:
+        changes["category"] = normalize_category(changes["category"])
     if "skills" in changes or "nice_to_have_skills" in changes:
         changes["skills"], changes["nice_to_have_skills"] = split_skill_lists(
             changes.get("skills", job.skills), changes.get("nice_to_have_skills", job.nice_to_have_skills)
@@ -350,6 +357,8 @@ async def update_job(
     job.updated_by = user.id
     await db.commit()
     await db.refresh(job)
+    if {"title", "skills", "nice_to_have_skills"} & changes.keys():
+        await refresh_job_embedding(db, job, user.id)
     return job
 
 

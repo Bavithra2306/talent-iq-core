@@ -4,12 +4,13 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from src.constants.categories import SUGGESTED_CATEGORIES
 from src.schema.job_schema import JobDraft
 
 # Long JDs are cut to keep the request within free-model limits.
 MAX_JD_CHARS = 15000
 
-SYSTEM_PROMPT = """You are an expert recruitment assistant that reads job descriptions (JDs).
+SYSTEM_PROMPT_TEMPLATE = """You are an expert recruitment assistant that reads job descriptions (JDs).
 
 Step 1 - classify the document:
 - "jd": a job description / job posting / vacancy.
@@ -18,8 +19,8 @@ Step 1 - classify the document:
 
 Step 2 - if it is a "jd", extract these fields into "job" (otherwise set "job" to null):
 - title: the job title, e.g. "Senior Python Developer".
-- category: the broad field of work in 1-3 words, e.g. "IT", "Healthcare", "Finance",
-  "Mechanical Engineering", "Sales", "Education", "Legal". Any field is allowed.
+- category: the broad field of work. Prefer one of: {categories}.
+  If none fits, give your own short name (1-3 words). Any field is allowed.
 - industry: the employer's industry if stated or obvious, e.g. "Software", "Hospital".
 - experience_years: the MINIMUM years of experience required as an integer
   ("5+ years" -> 5, "3-5 years" -> 3, fresher -> 0). null if not stated.
@@ -34,7 +35,9 @@ Rules:
 - Use only information in the document. Never invent values; use null or [] instead.
 - Do not put a skill in both lists.
 - Respond with ONLY a JSON object of this shape:
-{"document_type": "jd" | "resume" | "other", "job": { ...fields above... } | null}"""
+{{"document_type": "jd" | "resume" | "other", "job": {{ ...fields above... }} | null}}"""
+
+SYSTEM_PROMPT = SYSTEM_PROMPT_TEMPLATE.format(categories=", ".join(SUGGESTED_CATEGORIES))
 
 
 class JDExtraction(BaseModel):
