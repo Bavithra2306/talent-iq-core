@@ -15,27 +15,52 @@ class Settings(BaseSettings):
     jwt_issuer: str = "talentiq-auth"
     jwt_audience: str = "talentiq-core"
 
-    # LLM via OpenRouter (OpenAI-compatible API). OpenRouter tries the fallback
-    # models in order when the primary fails or is rate-limited.
-    llm_base_url: str = "https://openrouter.ai/api/v1"
-    llm_api_key: str | None = Field(
+    # LLM providers (all OpenAI-compatible). Requests go to "lanes" (provider + model)
+    # in priority order; each lane has its own requests-per-minute budget and a
+    # cool-down after errors. A lane without an API key is skipped.
+    gemini_api_key: str | None = Field(
+        default=None, validation_alias=AliasChoices("GOOGLE_GEMINI_API_KEY", "GEMINI_API_KEY")
+    )
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    gemini_models: list[str] = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+    gemini_rpm: int = 15  # documented free-tier limit per model
+
+    groq_api_key: str | None = None
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_models: list[str] = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    groq_rpm: int = 10  # tokens-per-minute (8000) is the real limit, so stay low
+
+    openrouter_api_key: str | None = Field(
         default=None, validation_alias=AliasChoices("OPENROUTER_API_KEY", "LLM_API_KEY")
     )
-    llm_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
-    # e.g. ["Groq"] for paid models; free models pick their own provider
-    llm_provider_order: list[str] = []
-    llm_fallback_models: list[str] = [
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_models: list[str] = [
+        "nvidia/nemotron-3-super-120b-a12b:free",
         "nvidia/nemotron-3.5-super-vl:free",
-        "google/gemma-4-31b-it:free",
     ]
+    openrouter_rpm: int = 6
+
+    # Stronger model for writing explanations (phase 4); same Gemini key.
+    llm_strong_model: str = "gemini-3.5-flash"
+
     llm_max_concurrency: int = 8
     llm_timeout_seconds: float = 60.0
+    llm_lane_cooldown_seconds: float = 30.0
 
-    # Embeddings (OpenAI-compatible). Columns are vector(768); change both together.
-    embedding_base_url: str = "https://openrouter.ai/api/v1"
-    embedding_api_key: str | None = None  # falls back to llm_api_key
-    embedding_model: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
-    embedding_dimensions: int = 768
+    # Embeddings: Gemini only. Different embedding models can't be compared with each
+    # other, so there is deliberately no fallback to another model.
+    embedding_model: str = "gemini-embedding-001"
+    embedding_dimensions: int = 768  # columns are vector(768); change both together
+    embedding_batch_size: int = 50
+
+    # Resume ingestion
+    parse_workers: int = 4  # parser worker processes
+    # True: read text-layer PDFs with pypdf (about 3 ms) and use Docling only for DOCX,
+    # scanned and garbled PDFs. False: run every PDF through Docling's layout model
+    # (about 3.5 s per file on CPU, so 100 resumes take several minutes).
+    pdf_fast_path: bool = True
+    extract_batch_size: int = 8  # resumes per LLM request
+    max_resumes_per_upload: int = 200
 
     # File storage: "local" now, "gcs" later (falls back to local on error).
     storage_backend: str = "local"
