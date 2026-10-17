@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from src.core.categories import SUGGESTED_CATEGORIES
+from src.constants.categories import SUGGESTED_CATEGORIES
 from src.schema.job_schema import JobDraft
 
 # Long JDs are cut to keep the request within free-model limits.

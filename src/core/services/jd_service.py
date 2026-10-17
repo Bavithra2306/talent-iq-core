@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies.auth_dependency import CurrentUser
 from src.config.settings import settings
 from src.constants.enums import Action, ActionCategory, FileType, JobStatus, PipelineStage
-from src.core.categories import normalize_category
+from src.constants.categories import normalize_category
 from src.core.prompts import jd_extraction
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import parser

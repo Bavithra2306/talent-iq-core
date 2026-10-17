@@ -9,7 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.core.categories import SUGGESTED_CATEGORIES
+from src.constants.categories import SUGGESTED_CATEGORIES
 
 # Resume text beyond this is cut (a resume rarely needs more; keeps requests small).
 MAX_RESUME_CHARS = 7000

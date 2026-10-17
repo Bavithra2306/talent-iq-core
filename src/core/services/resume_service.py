@@ -31,7 +31,7 @@ from src.constants.enums import (
     FileType,
     PipelineStage,
 )
-from src.core.categories import normalize_category
+from src.constants.categories import normalize_category
 from src.core.prompts import resume_extraction as prompt
 from src.core.services import embedding_service
 from src.core.services.audit_service import log_event, utcnow

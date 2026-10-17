@@ -11,7 +11,7 @@ from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import CandidateStatus, PipelineStage
-from src.core.categories import normalize_category
+from src.constants.categories import normalize_category
 from src.core.services import resume_service
 from src.core.services.storage_service import storage
 from src.data.models.audit_log import AuditLog
