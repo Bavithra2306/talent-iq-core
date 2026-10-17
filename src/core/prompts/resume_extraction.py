@@ -17,18 +17,18 @@ MAX_RESUME_CHARS = 7000
 SYSTEM_PROMPT_TEMPLATE = """You are an expert recruitment assistant. You receive several documents, each starting with "### Document N". For EACH document do two steps.
 
 Step 1 - classify it:
-- "resume": a CV / resume of one person.
+- "resume": a CV / resume of one person. A profile summary of one person (for example generated from a public GitHub or Stack Overflow profile) also counts as a resume.
 - "jd": a job description / job posting.
 - "other": anything else.
 
 Step 2 - if it is a "resume", extract (otherwise leave the other fields null / empty):
-- name: the candidate's full name.
+- name: the person's full name. Many resumes are anonymised: if no personal name is written, use null. Never use a job title, company or heading as the name.
 - email: lower-case email address, null if absent.
 - phone: phone number as written, null if absent.
 - location: the candidate's current city / region, null if absent.
 - category: the candidate's field of work. Prefer one of: {categories}. If none fits, give your own short name (1-3 words).
-- current_title: the most recent job title (or "Fresher" for someone with no work experience).
-- total_experience_years: total YEARS OF WORK EXPERIENCE as a number with at most one decimal, computed from the job dates (today is {today}; "Present" means today). Count overlapping jobs once. Internships count as work. 0 for freshers. Do not count education.
+- current_title: the most recent job title held. Use "Fresher" only when the document says the person is a student, fresher or recent graduate; if no job is mentioned, use null.
+- total_experience_years: total YEARS OF WORK EXPERIENCE as a number with at most one decimal, computed from the job dates (today is {today}; "Present" means today). Count overlapping jobs once. Internships count as work. 0 for freshers. Do not count education. null when there are no job dates or durations to work from.
 - skills: the candidate's skills as short canonical names ("PostgreSQL", "Patient care"), no duplicates, at most 40, most important first. Include tools, technologies, clinical / professional skills, and certifications.
 - roles: one entry per job held: {{"title": str, "company": str | null, "years": number | null}} where years is the duration in years (e.g. 1.5). Most recent first.
 - education: one entry per degree: {{"degree": str, "institution": str | null, "year": str | null}}.

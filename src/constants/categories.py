@@ -59,6 +59,22 @@ _SYNONYMS = {
     "design": "Design",
     "operations": "Operations",
     "other": "Other",
+    # categories used by the public LiveCareer resume datasets (Kaggle / Hugging Face)
+    "information-technology": "IT",
+    "accountant": "Finance",
+    "banking": "Finance",
+    "advocate": "Legal",
+    "teacher": "Education",
+    "chef": "Hospitality",
+    "designer": "Design",
+    "arts": "Design",
+    "apparel": "Design",
+    "digital-media": "Sales & Marketing",
+    "public-relations": "Sales & Marketing",
+    "business-development": "Sales & Marketing",
+    "construction": "Engineering",
+    "automobile": "Engineering",
+    "aviation": "Engineering",
 }
 
 
@@ -67,4 +83,8 @@ def normalize_category(value: str | None) -> str | None:
         return None
     cleaned = " ".join(value.split())
     key = cleaned.lower().replace(" field", "").replace(" industry", "").strip()
-    return _SYNONYMS.get(key) or cleaned[:60].title()
+    if key in _SYNONYMS:
+        return _SYNONYMS[key]
+    if cleaned.isupper() and len(cleaned) <= 4:  # acronyms like BPO, QA stay as they are
+        return cleaned
+    return cleaned[:60].title()

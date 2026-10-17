@@ -1,0 +1,33 @@
+"""Common types for resume sources."""
+
+from dataclasses import dataclass, field
+
+from src.core.sourcing.fetcher import PoliteFetcher
+
+PDF_MAGIC = b"%PDF"
+DOCX_MAGIC = b"PK"
+
+
+@dataclass
+class SourcedFile:
+    filename: str
+    data: bytes
+    source_site: str
+    origin: str  # where it came from (URL, profile, dataset row)
+
+
+@dataclass
+class SourceResult:
+    files: list[SourcedFile] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    partial: bool = False  # stopped early (rate limit, quota, some fetches failed)
+
+
+def is_resume_file(data: bytes, filename: str) -> bool:
+    name = filename.lower()
+    return (name.endswith(".pdf") and data.startswith(PDF_MAGIC)) or \
+        (name.endswith(".docx") and data.startswith(DOCX_MAGIC))
+
+
+# One shared fetcher so per-host pacing applies across all sources in a run.
+fetcher = PoliteFetcher(min_interval=1.0)

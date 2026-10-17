@@ -61,6 +61,7 @@ progress: dict[str, "BatchProgress"] = {}
 class UploadedFile:
     filename: str
     data: bytes
+    source_site: str | None = None  # github / kaggle / huggingface / stackexchange / url
 
 
 @dataclass
@@ -125,6 +126,7 @@ async def accept_uploads(
     *,
     source_type: str = "uploaded",
     source_site: str | None = None,
+    batch_id: str | None = None,
 ) -> UploadResult:
     """Validate and store files, then start the background pipeline."""
     rejected: list[dict] = []
@@ -182,7 +184,7 @@ async def accept_uploads(
         document = Document(
             uploaded_by=user.id,
             source_type=source_type,
-            source_site=source_site,
+            source_site=upload.source_site or source_site,
             document_type=DOC_TYPE_RESUME,
             original_filename=name,
             stored_filename=stored_filename,
@@ -199,12 +201,13 @@ async def accept_uploads(
     if not items:
         return UploadResult(batch_id=None, accepted=[], rejected=rejected)
 
-    batch_id = str(uuid.uuid4())
+    if batch_id is None:  # sourcing runs create (and log) their batch themselves
+        batch_id = str(uuid.uuid4())
+        await log_event(
+            user_id=user.id, category=ActionCategory.EXTRACTION, stage=PipelineStage.CREATED,
+            input_data=_batch_input(batch_id, files=len(items), rejected=len(rejected)),
+        )
     progress[batch_id] = BatchProgress(total=len(items))
-    await log_event(
-        user_id=user.id, category=ActionCategory.EXTRACTION, stage=PipelineStage.CREATED,
-        input_data=_batch_input(batch_id, files=len(items), rejected=len(rejected)),
-    )
     task = asyncio.create_task(_run_batch(batch_id, user.id, items))
     _background.add(task)
     task.add_done_callback(_background.discard)

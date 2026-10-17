@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     extract_batch_size: int = 8  # resumes per LLM request
     max_resumes_per_upload: int = 200
 
+    # Resume sourcing (all optional keys raise the free rate limits)
+    github_token: str | None = None
+    stackexchange_key: str | None = None
+    kaggle_username: str | None = None
+    kaggle_key: str | None = None
+    sourcing_user_agent: str = "TalentIQ-capstone/0.1 (resume sourcing; contact: admin)"
+    sourcing_timeout_seconds: float = 20.0
+
     # Matching / shortlisting
     score_batch_size: int = 8  # candidates per LLM scoring request
     explain_batch_size: int = 5  # candidates per LLM explanation request

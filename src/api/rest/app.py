@@ -10,6 +10,7 @@ from src.api.rest.routes.me import MeRouter
 from src.api.rest.routes.resume_route import ResumeRouter
 from src.api.rest.routes.review_route import ReviewRouter
 from src.api.rest.routes.shortlist_route import ShortlistRouter
+from src.api.rest.routes.sourcing_route import SourcingRouter
 from src.api.rest.routes.system_route import SystemRouter
 from src.config.settings import settings
 from src.core.services.document_parser import parser
@@ -37,4 +38,5 @@ def create_app() -> FastAPI:
     app.include_router(ShortlistRouter, prefix="/api/v1")
     app.include_router(ReviewRouter, prefix="/api/v1")
     app.include_router(SystemRouter, prefix="/api/v1")
+    app.include_router(SourcingRouter, prefix="/api/v1")
     return app

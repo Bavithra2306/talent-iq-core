@@ -1,0 +1,124 @@
+"""Polite, safe HTTP fetching for resume sourcing.
+
+- Only http(s) to public addresses: private, loopback, link-local and reserved IPs are
+  refused, also after redirects (so a pasted URL can't reach internal services).
+- robots.txt is honoured for pages and files fetched from user-supplied sites.
+- At most one request per host every `min_interval` seconds; size and time limits.
+"""
+
+import asyncio
+import ipaddress
+import logging
+import socket
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import urllib.robotparser
+from dataclasses import dataclass
+
+from src.config.settings import settings
+
+logger = logging.getLogger("talentiq.sourcing")
+
+
+class FetchError(Exception):
+    pass
+
+
+@dataclass
+class FetchResult:
+    url: str
+    status: int
+    content_type: str
+    data: bytes
+    headers: dict
+
+
+def _check_public(url: str) -> None:
+    parts = urllib.parse.urlparse(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise FetchError("Only http(s) links are allowed.")
+    try:
+        infos = socket.getaddrinfo(parts.hostname, parts.port or (443 if parts.scheme == "https" else 80))
+    except socket.gaierror as exc:
+        raise FetchError(f"Could not resolve {parts.hostname}.") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+                or ip.is_multicast or ip.is_unspecified):
+            raise FetchError(f"{parts.hostname} points to a private or internal address.")
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _check_public(newurl)  # re-validate every hop
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_opener = urllib.request.build_opener(_SafeRedirect)
+
+
+class PoliteFetcher:
+    def __init__(self, min_interval: float = 2.0):
+        self.min_interval = min_interval
+        self._last: dict[str, float] = {}
+        self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
+        self._lock = asyncio.Lock()
+
+    async def _wait_turn(self, host: str) -> None:
+        async with self._lock:
+            wait = self._last.get(host, 0) + self.min_interval - time.monotonic()
+            self._last[host] = time.monotonic() + max(wait, 0)
+        if wait > 0:
+            await asyncio.sleep(wait)
+
+    def _robots_allows(self, url: str) -> bool:
+        parts = urllib.parse.urlparse(url)
+        base = f"{parts.scheme}://{parts.netloc}"
+        if base not in self._robots:
+            parser = urllib.robotparser.RobotFileParser()
+            try:
+                _check_public(base + "/robots.txt")
+                request = urllib.request.Request(base + "/robots.txt",
+                                                 headers={"User-Agent": settings.sourcing_user_agent})
+                with _opener.open(request, timeout=10) as response:
+                    parser.parse(response.read(200_000).decode("utf-8", "replace").splitlines())
+            except urllib.error.HTTPError as exc:
+                # 4xx: no robots.txt -> allowed; 5xx: be careful -> disallow
+                parser = None if exc.code < 500 else False
+            except Exception:
+                parser = None
+            self._robots[base] = parser
+        parser = self._robots[base]
+        if parser is False:
+            return False
+        return parser is None or parser.can_fetch(settings.sourcing_user_agent, url)
+
+    def _get(self, url: str, headers: dict, max_bytes: int, check_robots: bool) -> FetchResult:
+        _check_public(url)
+        if check_robots and not self._robots_allows(url):
+            raise FetchError("robots.txt does not allow fetching this page.")
+        request = urllib.request.Request(url, headers={"User-Agent": settings.sourcing_user_agent, **headers})
+        try:
+            with _opener.open(request, timeout=settings.sourcing_timeout_seconds) as response:
+                length = int(response.headers.get("Content-Length") or 0)
+                if length > max_bytes:
+                    raise FetchError(f"File is larger than {max_bytes // (1024 * 1024)} MB.")
+                data = response.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise FetchError(f"File is larger than {max_bytes // (1024 * 1024)} MB.")
+                return FetchResult(response.geturl(), response.status,
+                                   (response.headers.get("Content-Type") or "").split(";")[0].strip().lower(),
+                                   data, dict(response.headers))
+        except urllib.error.HTTPError as exc:
+            raise FetchError(f"HTTP {exc.code} from {urllib.parse.urlparse(url).netloc}.") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise FetchError(f"Could not fetch {url}: {getattr(exc, 'reason', exc)}") from exc
+
+    async def get(self, url: str, *, headers: dict | None = None, max_bytes: int | None = None,
+                  check_robots: bool = True) -> FetchResult:
+        host = urllib.parse.urlparse(url).netloc
+        await self._wait_turn(host)
+        return await asyncio.to_thread(self._get, url, headers or {},
+                                       max_bytes or settings.max_upload_bytes, check_robots)
