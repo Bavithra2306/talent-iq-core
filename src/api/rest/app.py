@@ -8,6 +8,7 @@ from src.api.rest.routes.health import HealthRouter
 from src.api.rest.routes.job_route import JobRouter
 from src.api.rest.routes.me import MeRouter
 from src.api.rest.routes.resume_route import ResumeRouter
+from src.api.rest.routes.shortlist_route import ShortlistRouter
 from src.config.settings import settings
 from src.core.services.document_parser import parser
 
@@ -27,4 +28,5 @@ def create_app() -> FastAPI:
     app.include_router(MeRouter, prefix="/api/v1")
     app.include_router(JobRouter, prefix="/api/v1")
     app.include_router(ResumeRouter, prefix="/api/v1")
+    app.include_router(ShortlistRouter, prefix="/api/v1")
     return app

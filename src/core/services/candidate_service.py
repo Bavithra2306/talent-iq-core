@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import CandidateStatus, PipelineStage
 from src.constants.categories import normalize_category
+from src.core.services.query_helpers import skill_clause
 from src.core.services import resume_service
 from src.core.services.storage_service import storage
 from src.data.models.audit_log import AuditLog
@@ -95,7 +96,7 @@ def _apply_filters(query, *, category, search, location, skill, min_experience,
     if location:
         query = query.where(Candidate.location.ilike(f"%{location}%"))
     if skill:
-        query = query.where(cast(ResumeExtraction.skills, String).ilike(f'%"{skill}%'))
+        query = query.where(skill_clause(ResumeExtraction.skills, skill))
     if min_experience is not None:
         query = query.where(Candidate.total_years_experience >= min_experience)
     if max_experience is not None:

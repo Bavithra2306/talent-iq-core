@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     extract_batch_size: int = 8  # resumes per LLM request
     max_resumes_per_upload: int = 200
 
+    # Matching / shortlisting
+    score_batch_size: int = 8  # candidates per LLM scoring request
+    explain_batch_size: int = 5  # candidates per LLM explanation request
+    pool_multiplier: int = 3  # candidates sent to the LLM = top_k x this ...
+    pool_min: int = 30  # ... but at least this many
+    pool_max: int = 100  # ... and at most this many
+
     # File storage: "local" now, "gcs" later (falls back to local on error).
     storage_backend: str = "local"
     local_storage_dir: str = "storage"
