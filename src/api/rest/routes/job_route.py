@@ -3,22 +3,17 @@ import uuid
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import (
+from src.api.rest.dependencies import (
     CurrentUser,
     Role,
     get_current_user,
     require_roles,
 )
+from src.api.rest.schemas.job_schema import JobExtractResponse, JobListResponse
 from src.constants.enums import JobStatus
 from src.core.services import jd_service
 from src.data.clients.postgres import get_db
-from src.schema.job_schema import (
-    JobCreate,
-    JobExtractResponse,
-    JobListResponse,
-    JobRead,
-    JobUpdate,
-)
+from src.schema.job_schema import JobCreate, JobRead, JobUpdate
 
 JobRouter = APIRouter(prefix="/jobs", tags=["Jobs"])
 

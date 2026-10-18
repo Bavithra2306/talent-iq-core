@@ -9,15 +9,15 @@ import re
 import urllib.parse
 from pathlib import PurePosixPath
 
-from src.core.sourcing.documents import html_text_and_links, text_to_pdf
-from src.core.sourcing.fetcher import FetchError
-from src.core.sourcing.sources.base import (
+from src.handlers.http_clients.sourcing.fetcher import FetchError
+from src.handlers.http_clients.sourcing.sources.base import (
     DOCX_MAGIC,
     PDF_MAGIC,
     SourcedFile,
     SourceResult,
     fetcher,
 )
+from src.utils.documents import html_text_and_links, text_to_pdf
 
 _RESUME_HINT = re.compile(r"(resume|résumé|cv|curriculum)", re.I)
 MAX_LINKS_PER_PAGE = 5

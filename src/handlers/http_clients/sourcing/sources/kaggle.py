@@ -6,15 +6,19 @@ downloaded once and cached; later runs only read PDFs from it.
 
 import asyncio
 import base64
-import io
 import random
 import zipfile
 from pathlib import Path
 
 from src.config.settings import settings
 from src.constants.categories import normalize_category
-from src.core.sourcing.fetcher import FetchError
-from src.core.sourcing.sources.base import SourcedFile, SourceResult, fetcher, is_resume_file
+from src.handlers.http_clients.sourcing.fetcher import FetchError
+from src.handlers.http_clients.sourcing.sources.base import (
+    SourcedFile,
+    SourceResult,
+    fetcher,
+    is_resume_file,
+)
 
 DATASET = "snehaanbhawal/resume-dataset"
 URL = f"https://www.kaggle.com/api/v1/datasets/download/{DATASET}"

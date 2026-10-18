@@ -11,18 +11,22 @@ import asyncio
 import logging
 import uuid
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from src.api.dependencies.auth_dependency import CurrentUser
+from src.api.rest.dependencies import CurrentUser
+from src.api.rest.schemas.sourcing_schema import SourceInfo, SourcingRunRequest
 from src.config.settings import settings
 from src.constants.categories import SUGGESTED_CATEGORIES
 from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.core.services import resume_service
 from src.core.services.audit_service import log_event
-from src.core.sourcing.sources import github, huggingface, kaggle, stackexchange, url
-from src.core.sourcing.sources.base import SourceResult
 from src.data.clients.postgres import AsyncSessionLocal
-from src.schema.sourcing_schema import SourceInfo, SourcingRunRequest
+from src.handlers.http_clients.sourcing.sources import (
+    github,
+    huggingface,
+    kaggle,
+    stackexchange,
+    url,
+)
+from src.handlers.http_clients.sourcing.sources.base import SourceResult
 
 logger = logging.getLogger("talentiq.sourcing")
 _background: set[asyncio.Task] = set()

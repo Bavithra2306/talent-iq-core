@@ -14,9 +14,9 @@ from pathlib import Path
 
 from src.config.settings import settings
 from src.constants.categories import normalize_category
-from src.core.sourcing.documents import text_to_pdf
-from src.core.sourcing.fetcher import FetchError
-from src.core.sourcing.sources.base import SourcedFile, SourceResult, fetcher
+from src.handlers.http_clients.sourcing.fetcher import FetchError
+from src.handlers.http_clients.sourcing.sources.base import SourcedFile, SourceResult, fetcher
+from src.utils.documents import text_to_pdf
 
 API = "https://datasets-server.huggingface.co"
 DATASETS = {

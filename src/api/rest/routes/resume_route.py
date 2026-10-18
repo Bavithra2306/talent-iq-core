@@ -3,17 +3,17 @@ import uuid
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser, Role, require_roles
-from src.config.settings import settings
-from src.core.services import candidate_service, resume_service
-from src.core.services.candidate_service import SortField
-from src.data.clients.postgres import get_db
-from src.schema.candidate_schema import (
+from src.api.rest.dependencies import CurrentUser, Role, require_roles
+from src.api.rest.schemas.candidate_schema import (
     CandidateDetail,
     CandidateListResponse,
     CategoryCount,
 )
-from src.schema.ingestion_schema import BatchStatus, UploadResponse
+from src.api.rest.schemas.ingestion_schema import BatchStatus, UploadResponse
+from src.config.settings import settings
+from src.core.services import candidate_service, resume_service
+from src.core.services.candidate_service import SortField
+from src.data.clients.postgres import get_db
 
 ResumeRouter = APIRouter(tags=["Resumes"])
 

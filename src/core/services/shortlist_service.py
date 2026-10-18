@@ -8,27 +8,12 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from fastapi import HTTPException, status
 from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser
-from src.constants.categories import normalize_category
-from src.constants.enums import CandidateStatus, PipelineStage
-from src.core.prompts import filter_parsing
-from src.core.services.query_helpers import skill_clause
-from src.core.services import matching_service, scoring_rules
-from src.core.services.llm_client import LLMError, llm
-from src.core.services.scoring_rules import Weights
-from src.data.clients.postgres import AsyncSessionLocal
-from src.data.models.audit_log import AuditLog
-from src.data.models.candidate import Candidate
-from src.data.models.job import Job
-from src.data.models.matching_shortlisting import MatchingShortlisting
-from src.data.models.resume_extraction import ResumeExtraction
-from src.data.models.scoring_config import ScoringConfig
-from src.schema.ingestion_schema import BatchEvent, RejectedFile
-from src.schema.shortlist_schema import (
+from src.api.rest.dependencies import CurrentUser
+from src.api.rest.schemas.ingestion_schema import BatchEvent
+from src.api.rest.schemas.shortlist_schema import (
     LogEntry,
     ParseFilterResponse,
     RunStatus,
@@ -36,6 +21,21 @@ from src.schema.shortlist_schema import (
     ShortlistEntry,
     ShortlistFilters,
 )
+from src.constants.categories import normalize_category
+from src.constants.enums import CandidateStatus, PipelineStage
+from src.control.agents.prompts import filter_parsing
+from src.core.exceptions import NotFoundError, ServiceUnavailableError, UnprocessableError
+from src.core.services import matching_service, scoring_rules
+from src.core.services.query_helpers import skill_clause
+from src.core.services.scoring_rules import Weights
+from src.data.clients.postgres import AsyncSessionLocal
+from src.data.models.postgres.audit_log import AuditLog
+from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.job import Job
+from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
+from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.data.models.postgres.scoring_config import ScoringConfig
+from src.handlers.http_clients.llm_client import LLMError, llm
 
 logger = logging.getLogger("talentiq.shortlist")
 
@@ -162,10 +162,10 @@ async def apply_weights(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, 
     try:
         weights.validate()
     except ValueError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        raise UnprocessableError(str(exc)) from exc
     job = await db.get(Job, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+        raise NotFoundError("Job not found.")
 
     config = (await db.execute(select(ScoringConfig).where(ScoringConfig.job_id == job_id))).scalar_one_or_none()
     if config is None:
@@ -235,7 +235,7 @@ async def get_run_status(db: AsyncSession, run_id: str) -> RunStatus:
         .order_by(AuditLog.created_at, AuditLog.id)
     )).scalars().all()
     if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found.")
+        raise NotFoundError("Run not found.")
 
     events = [BatchEvent(at=r.created_at, stage=r.stage.value if r.stage else None,
                          action=r.actions.value if r.actions else None, detail=_detail(r)) for r in rows]
@@ -301,8 +301,7 @@ async def parse_filter(text: str) -> ParseFilterResponse:
             response_model=filter_parsing.ParsedFilter, max_tokens=600,
         )
     except LLMError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
-                            "The AI service is busy. Please try again in a minute.") from exc
+        raise ServiceUnavailableError("The AI service is busy. Please try again in a minute.") from exc
     filters = ShortlistFilters(
         category=normalize_category(parsed.category), location=parsed.location,
         min_experience=parsed.min_experience, max_experience=parsed.max_experience,

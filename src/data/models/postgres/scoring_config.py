@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import CheckConstraint, ForeignKey, Integer, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
-from src.data.models.base import AuditMixin, Base, IdMixin
+from src.data.models.postgres.base import AuditMixin, Base, IdMixin
 
 
 class ScoringConfig(IdMixin, AuditMixin, Base):

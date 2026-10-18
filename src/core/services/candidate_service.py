@@ -3,26 +3,25 @@
 import json
 import time
 import uuid
-from datetime import datetime
 from typing import Literal
 
-from fastapi import HTTPException, status
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.constants.enums import CandidateStatus, PipelineStage
+from src.api.rest.schemas.candidate_schema import CandidateDetail, CandidateListItem, JobStatusItem
+from src.api.rest.schemas.ingestion_schema import BatchEvent, BatchStatus, RejectedFile
 from src.constants.categories import normalize_category
-from src.core.services.query_helpers import skill_clause
+from src.constants.enums import CandidateStatus, PipelineStage
+from src.core.exceptions import NotFoundError
 from src.core.services import resume_service
-from src.core.services.storage_service import storage
-from src.data.models.audit_log import AuditLog
-from src.data.models.candidate import Candidate
-from src.data.models.document import Document
-from src.data.models.resume_extraction import ResumeExtraction
-from src.data.models.job import Job
-from src.data.models.matching_shortlisting import MatchingShortlisting
-from src.schema.candidate_schema import CandidateDetail, CandidateListItem, JobStatusItem
-from src.schema.ingestion_schema import BatchEvent, BatchStatus, RejectedFile
+from src.core.services.query_helpers import skill_clause
+from src.data.clients.storage import storage
+from src.data.models.postgres.audit_log import AuditLog
+from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.document import Document
+from src.data.models.postgres.job import Job
+from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
+from src.data.models.postgres.resume_extraction import ResumeExtraction
 
 SortField = Literal["date_added", "name", "experience"]
 
@@ -48,7 +47,7 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
         .order_by(AuditLog.created_at, AuditLog.id)
     )).scalars().all()
     if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Batch not found.")
+        raise NotFoundError("Batch not found.")
 
     events = [
         BatchEvent(at=r.created_at, stage=r.stage.value if r.stage else None,
@@ -189,7 +188,7 @@ async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> CandidateD
         .where(Candidate.id == candidate_id)
     )).first()
     if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found.")
+        raise NotFoundError("Candidate not found.")
     candidate, extraction, document = row
     detail = CandidateDetail.model_validate(candidate)
     detail.source_site = document.source_site
@@ -213,8 +212,8 @@ async def category_counts(db: AsyncSession) -> list[dict]:
 async def get_resume_file(db: AsyncSession, candidate_id: uuid.UUID) -> tuple[Document, bytes]:
     candidate = await db.get(Candidate, candidate_id)
     if candidate is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Candidate not found.")
+        raise NotFoundError("Candidate not found.")
     document = await db.get(Document, candidate.current_resume_id)
     if document is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume file not found.")
+        raise NotFoundError("Resume file not found.")
     return document, storage.read(document.file_path)

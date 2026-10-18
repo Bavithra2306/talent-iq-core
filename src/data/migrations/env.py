@@ -7,7 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from src.config.settings import settings
-from src.data.models import Base  # noqa: F401  (imports register all models)
+from src.data.models.postgres import Base  # noqa: F401  (imports register all models)
 
 config = context.config
 

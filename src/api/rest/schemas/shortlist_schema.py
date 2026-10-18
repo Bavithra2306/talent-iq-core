@@ -4,8 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from src.api.rest.schemas.ingestion_schema import BatchEvent, RejectedFile
 from src.constants.enums import CandidateStatus
-from src.schema.ingestion_schema import BatchEvent, RejectedFile
 
 
 class ShortlistFilters(BaseModel):

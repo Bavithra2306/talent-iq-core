@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.data.clients.postgres import AsyncSessionLocal
-from src.data.models.audit_log import AuditLog
+from src.data.models.postgres.audit_log import AuditLog
 
 logger = logging.getLogger("talentiq.audit")
 

@@ -7,17 +7,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser, Role
+from src.api.rest.dependencies import CurrentUser, Role
 from src.constants.enums import Action, ActionCategory, CandidateStatus, PipelineStage
+from src.core.exceptions import NotFoundError
 from src.core.services import matching_service
 from src.core.services.audit_service import log_event, utcnow
-from src.data.models.candidate import Candidate
-from src.data.models.job import Job
-from src.data.models.matching_shortlisting import MatchingShortlisting
+from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.job import Job
+from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 
 ExportFormat = Literal["csv", "xlsx"]
 ExportScope = Literal["shortlisted", "ranked", "all"]
@@ -140,7 +140,7 @@ async def export_shortlist(db: AsyncSession, user: CurrentUser, job_id: uuid.UUI
     """Returns (file bytes, media type, filename)."""
     job = await db.get(Job, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+        raise NotFoundError("Job not found.")
     started = utcnow()
     request = {"format": fmt, "scope": scope if user.role != Role.HIRING_MANAGER else "shared_with_me"}
     await log_event(user_id=user.id, category=ActionCategory.EXPORTING,

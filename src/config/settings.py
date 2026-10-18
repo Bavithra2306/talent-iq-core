@@ -7,6 +7,15 @@ class Settings(BaseSettings):
     app_env: str = "development"
     debug: bool = True
 
+    # Server logs: JSON lines on stdout (see src/observability/logging).
+    log_level: str = "INFO"
+    log_json: bool = True
+
+    # Requests per client IP per minute (0 = no limit). "Heavy" = uploads, matching,
+    # sourcing and other endpoints that call the LLM or parse files.
+    rate_limit_per_minute: int = 600
+    rate_limit_heavy_per_minute: int = 30
+
     database_url: str
 
     # Auth service (for the user directory: picking a hiring manager to share with).

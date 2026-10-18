@@ -6,10 +6,10 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.services import embedding_service
-from src.core.services.embedding_service import EmbeddingError
-from src.data.models.job import Job
-from src.data.models.job_embedding import JobEmbedding
+from src.data.models.postgres.job import Job
+from src.data.models.postgres.job_embedding import JobEmbedding
+from src.handlers.http_clients import embedding_client
+from src.handlers.http_clients.embedding_client import EmbeddingError
 
 logger = logging.getLogger("talentiq.job_embeddings")
 
@@ -24,7 +24,7 @@ async def refresh_job_embedding(db: AsyncSession, job: Job, user_id: uuid.UUID |
     }
     present = {k: v for k, v in texts.items() if v.strip()}
     try:
-        vectors = await embedding_service.embed_texts(list(present.values()))
+        vectors = await embedding_client.embed_texts(list(present.values()))
     except EmbeddingError as exc:
         logger.warning("job %s embedding skipped: %s", job.id, exc)
         return False

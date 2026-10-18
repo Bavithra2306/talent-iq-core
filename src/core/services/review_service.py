@@ -14,24 +14,24 @@ Every action is written to audit_logs, which is also the review history.
 import json
 import uuid
 
-from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser
+from src.api.rest.dependencies import CurrentUser
+from src.api.rest.schemas.shortlist_schema import ReviewEvent, ShareResult, ShortlistEntry
 from src.constants.enums import Action, ActionCategory, CandidateStatus
+from src.core.exceptions import ConflictError, NotFoundError, UnprocessableError
 from src.core.services import matching_service
 from src.core.services.audit_service import log_event
 from src.core.services.shortlist_service import _entry
-from src.core.services.storage_service import storage
-from src.core.services.user_directory import find_user
-from src.data.models.audit_log import AuditLog
-from src.data.models.candidate import Candidate
-from src.data.models.document import Document
-from src.data.models.job import Job
-from src.data.models.matching_shortlisting import MatchingShortlisting
-from src.data.models.resume_extraction import ResumeExtraction
-from src.schema.shortlist_schema import ReviewEvent, ShareResult, ShortlistEntry
+from src.data.clients.storage import storage
+from src.data.models.postgres.audit_log import AuditLog
+from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.document import Document
+from src.data.models.postgres.job import Job
+from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
+from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.handlers.http_clients.auth_client import find_user
 
 REVIEW_ACTIONS = (
     Action.CANDIDATE_ADDED_TO_SHORTLIST, Action.CANDIDATE_REMOVED_FROM_SHORTLIST,
@@ -46,7 +46,7 @@ DECIDED = (CandidateStatus.APPROVED, CandidateStatus.REJECTED, CandidateStatus.I
 async def _row(db: AsyncSession, entry_id: uuid.UUID) -> MatchingShortlisting:
     row = await db.get(MatchingShortlisting, entry_id)
     if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Shortlist entry not found.")
+        raise NotFoundError("Shortlist entry not found.")
     return row
 
 
@@ -54,7 +54,7 @@ async def _hm_row(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> M
     """A row shared with this hiring manager (others get 404, not 403, to avoid leaking ids)."""
     row = await db.get(MatchingShortlisting, entry_id)
     if row is None or row.shared_to != user.id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Shortlist entry not found.")
+        raise NotFoundError("Shortlist entry not found.")
     return row
 
 
@@ -104,10 +104,9 @@ async def set_shortlisted(db: AsyncSession, user: CurrentUser, entry_id: uuid.UU
     """Recruiter's manual change to the final shortlist (before it is shared)."""
     row = await _row(db, entry_id)
     if row.shared_to is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT,
-                            "This candidate was already shared with a hiring manager.")
+        raise ConflictError("This candidate was already shared with a hiring manager.")
     if row.status not in (CandidateStatus.SOURCED, CandidateStatus.SHORTLISTED):
-        raise HTTPException(status.HTTP_409_CONFLICT, f"The candidate is already {row.status.value}.")
+        raise ConflictError(f"The candidate is already {row.status.value}.")
     row.status = CandidateStatus.SHORTLISTED if shortlisted else CandidateStatus.SOURCED
     row.updated_by = user.id
     await db.commit()
@@ -120,11 +119,10 @@ async def share(db: AsyncSession, user: CurrentUser, access_token: str, job_id: 
                 hiring_manager_id: uuid.UUID, entry_ids: list[uuid.UUID] | None,
                 note: str | None) -> ShareResult:
     if await db.get(Job, job_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+        raise NotFoundError("Job not found.")
     manager = await find_user(access_token, hiring_manager_id, "hiring_manager")
     if manager is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            "That user is not an active hiring manager.")
+        raise UnprocessableError("That user is not an active hiring manager.")
 
     query = select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id)
     if entry_ids:
@@ -133,9 +131,9 @@ async def share(db: AsyncSession, user: CurrentUser, access_token: str, job_id: 
         query = query.where(MatchingShortlisting.status == CandidateStatus.SHORTLISTED)
     rows = list((await db.execute(query)).scalars())
     if entry_ids and len(rows) != len(set(entry_ids)):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Some entries don't belong to this job.")
+        raise NotFoundError("Some entries don't belong to this job.")
     if not rows:
-        raise HTTPException(status.HTTP_409_CONFLICT, "There are no shortlisted candidates to share.")
+        raise ConflictError("There are no shortlisted candidates to share.")
 
     shared, skipped = 0, []
     for row in rows:
@@ -169,7 +167,7 @@ async def shared_resume(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID
     row = await _hm_row(db, user, entry_id)
     document = await db.get(Document, row.resume_id)
     if document is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Resume file not found.")
+        raise NotFoundError("Resume file not found.")
     return document, storage.read(document.file_path)
 
 
@@ -177,7 +175,7 @@ async def decide(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID, decis
                  comment: str | None) -> ShortlistEntry:
     row = await _hm_row(db, user, entry_id)
     if row.status == CandidateStatus.INTERVIEW_SCHEDULED:
-        raise HTTPException(status.HTTP_409_CONFLICT, "The interview is already scheduled.")
+        raise ConflictError("The interview is already scheduled.")
     row.status = CandidateStatus.APPROVED if decision == "approved" else CandidateStatus.REJECTED
     row.updated_by = user.id
     await _sync_candidate_status(db, row)
@@ -190,7 +188,7 @@ async def decide(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID, decis
 async def schedule_interview(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> ShortlistEntry:
     row = await _hm_row(db, user, entry_id)
     if row.status != CandidateStatus.APPROVED:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Only approved candidates can be scheduled.")
+        raise ConflictError("Only approved candidates can be scheduled.")
     row.status = CandidateStatus.INTERVIEW_SCHEDULED
     row.updated_by = user.id
     await _sync_candidate_status(db, row)

@@ -5,7 +5,7 @@ from sqlalchemy import DateTime, Integer, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.constants.enums import Action, ActionCategory, PipelineStage
-from src.data.models.base import Base, IdMixin, pg_enum
+from src.data.models.postgres.base import Base, IdMixin, pg_enum
 
 
 class AuditLog(IdMixin, Base):

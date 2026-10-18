@@ -7,30 +7,34 @@ import hashlib
 import logging
 import uuid
 
-from fastapi import HTTPException, status
 from fpdf import FPDF
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser
+from src.api.rest.dependencies import CurrentUser
+from src.api.rest.schemas.job_schema import JobDraft, JobExtractResponse
 from src.config.settings import settings
-from src.constants.enums import Action, ActionCategory, FileType, JobStatus, PipelineStage
 from src.constants.categories import normalize_category
-from src.core.prompts import jd_extraction
+from src.constants.enums import Action, ActionCategory, FileType, JobStatus, PipelineStage
+from src.control.agents.prompts import jd_extraction
+from src.core.exceptions import (
+    BadRequestError,
+    ConflictError,
+    FileTooLargeError,
+    NotFoundError,
+    ServiceUnavailableError,
+    UnprocessableError,
+    UnsupportedFileError,
+)
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import parser
 from src.core.services.job_embedding_service import refresh_job_embedding
-from src.core.services.llm_client import LLMError, llm
-from src.core.services.storage_service import storage
-from src.data.models.document import Document
-from src.data.models.job import Job
-from src.data.models.scoring_config import ScoringConfig
-from src.schema.job_schema import (
-    JobCreate,
-    JobDraft,
-    JobExtractResponse,
-    JobUpdate,
-)
+from src.data.clients.storage import storage
+from src.data.models.postgres.document import Document
+from src.data.models.postgres.job import Job
+from src.data.models.postgres.scoring_config import ScoringConfig
+from src.handlers.http_clients.llm_client import LLMError, llm
+from src.schema.job_schema import JobCreate, JobUpdate
 
 logger = logging.getLogger("talentiq.jd")
 
@@ -60,15 +64,14 @@ def split_skill_lists(skills, nice) -> tuple[list[str], list[str]]:
 
 def validate_pdf(filename: str, data: bytes) -> None:
     if not data:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The file is empty.")
+        raise BadRequestError("The file is empty.")
     if len(data) > settings.max_upload_bytes:
-        raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        raise FileTooLargeError(
             f"The file is larger than {settings.max_upload_bytes // (1024 * 1024)} MB.",
         )
     if not filename.lower().endswith(".pdf") or not data.startswith(b"%PDF"):
-        raise HTTPException(
-            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "The JD must be a PDF file."
+        raise UnsupportedFileError(
+            "The JD must be a PDF file."
         )
 
 
@@ -156,8 +159,7 @@ async def extract_jd(
         )
         await db.commit()
     elif document.document_type != DOC_TYPE_JD:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
+        raise ConflictError(
             "This file was already uploaded as a resume.",
         )
     else:
@@ -180,8 +182,8 @@ async def extract_jd(
             action=Action.PARSING_FAILED, input_data={"document_id": str(document.id)},
             output_data=str(exc), start_time=started,
         )
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "The PDF could not be read."
+        raise UnprocessableError(
+            "The PDF could not be read."
         ) from exc
     await log_event(
         user_id=user.id, category=ActionCategory.EXTRACTION,
@@ -194,8 +196,8 @@ async def extract_jd(
         document.file_type = FileType.SCANNED_PDF
         await db.commit()
     if not parsed.text.strip():
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY, "No text could be read from the PDF."
+        raise UnprocessableError(
+            "No text could be read from the PDF."
         )
 
     # LLM: classify + extract
@@ -212,8 +214,7 @@ async def extract_jd(
             action=Action.EXTRACTION_FAILED, input_data={"document_id": str(document.id)},
             output_data=str(exc), start_time=started,
         )
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
+        raise ServiceUnavailableError(
             "The AI service is busy or unavailable. Please try again in a minute.",
         ) from exc
 
@@ -231,8 +232,7 @@ async def extract_jd(
             storage.delete(document.file_path)
             await db.delete(document)
             await db.commit()
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+        raise UnprocessableError(
             "This file doesn't look like a job description"
             + (" (it looks like a resume)." if extraction.document_type == "resume" else "."),
         )
@@ -266,7 +266,7 @@ async def create_job(db: AsyncSession, user: CurrentUser, data: JobCreate) -> Jo
     if data.jd_id is not None:
         document = await db.get(Document, data.jd_id)
         if document is None or document.document_type != DOC_TYPE_JD:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "JD document not found.")
+            raise NotFoundError("JD document not found.")
         jd_id = document.id
     else:
         pdf_bytes = render_jd_pdf(data)
@@ -337,7 +337,7 @@ async def list_jobs(
 async def get_job(db: AsyncSession, job_id: uuid.UUID) -> Job:
     job = await db.get(Job, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+        raise NotFoundError("Job not found.")
     return job
 
 
@@ -366,5 +366,5 @@ async def get_jd_file(db: AsyncSession, job_id: uuid.UUID) -> tuple[Document, by
     job = await get_job(db, job_id)
     document = await db.get(Document, job.jd_id)
     if document is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "JD document not found.")
+        raise NotFoundError("JD document not found.")
     return document, storage.read(document.file_path)

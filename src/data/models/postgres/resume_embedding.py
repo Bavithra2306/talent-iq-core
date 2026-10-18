@@ -5,7 +5,7 @@ from sqlalchemy import ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.constants.enums import EmbeddingKind
-from src.data.models.base import EMBEDDING_DIM, AuditMixin, Base, IdMixin, pg_enum
+from src.data.models.postgres.base import EMBEDDING_DIM, AuditMixin, Base, IdMixin, pg_enum
 
 
 class ResumeEmbedding(IdMixin, AuditMixin, Base):

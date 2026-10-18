@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, status
 
-from src.api.dependencies.auth_dependency import CurrentUser, Role, require_roles
+from src.api.rest.dependencies import CurrentUser, Role, require_roles
+from src.api.rest.schemas.sourcing_schema import SourceInfo, SourcingRunAccepted, SourcingRunRequest
 from src.core.services import sourcing_service
-from src.schema.sourcing_schema import SourceInfo, SourcingRunAccepted, SourcingRunRequest
 
 SourcingRouter = APIRouter(prefix="/sourcing", tags=["Sourcing"])
 

@@ -5,7 +5,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.constants.enums import JobStatus
-from src.data.models.base import AuditMixin, Base, IdMixin, pg_enum
+from src.data.models.postgres.base import AuditMixin, Base, IdMixin, pg_enum
 
 
 class Job(IdMixin, AuditMixin, Base):

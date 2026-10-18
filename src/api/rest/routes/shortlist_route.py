@@ -1,17 +1,11 @@
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser, Role, require_roles
-from src.constants.enums import CandidateStatus, PipelineStage
-from src.core.services import export_service, matching_service, shortlist_service
-from src.core.services.scoring_rules import Weights
-from src.core.services.shortlist_service import SortField
-from src.data.clients.postgres import get_db
-from src.schema.scoring_config_schema import ScoringConfigUpdate
-from src.schema.shortlist_schema import (
+from src.api.rest.dependencies import CurrentUser, Role, require_roles
+from src.api.rest.schemas.shortlist_schema import (
     LogListResponse,
     ParseFilterRequest,
     ParseFilterResponse,
@@ -20,6 +14,12 @@ from src.schema.shortlist_schema import (
     ShortlistListResponse,
     ShortlistRunRequest,
 )
+from src.constants.enums import CandidateStatus, PipelineStage
+from src.core.services import matching_service, shortlist_service
+from src.core.services.scoring_rules import Weights
+from src.core.services.shortlist_service import SortField
+from src.data.clients.postgres import get_db
+from src.schema.scoring_config_schema import ScoringConfigUpdate
 
 ShortlistRouter = APIRouter(tags=["Shortlisting"])
 
@@ -138,19 +138,3 @@ async def logs(
         db, job_id=job_id, stage=stage, category=category, since=since, until=until,
         only_stages=only_stages, limit=limit, offset=offset)
     return LogListResponse(items=items, total=total)
-
-
-@ShortlistRouter.get("/jobs/{job_id}/shortlist/export")
-async def export_shortlist(
-    job_id: uuid.UUID,
-    format: export_service.ExportFormat = "xlsx",
-    scope: export_service.ExportScope = Query(
-        default="shortlisted",
-        description="shortlisted: final list incl. review outcomes; ranked: latest run; all: every scored candidate"),
-    db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(require_roles(Role.RECRUITER, Role.HIRING_MANAGER)),
-):
-    """Download the shortlist as Excel or CSV (hiring managers get only what was shared with them)."""
-    content, media, filename = await export_service.export_shortlist(db, user, job_id, format, scope)
-    return Response(content=content, media_type=media,
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})

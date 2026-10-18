@@ -21,8 +21,9 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser
+from src.api.rest.dependencies import CurrentUser
 from src.config.settings import settings
+from src.constants.categories import normalize_category
 from src.constants.enums import (
     Action,
     ActionCategory,
@@ -31,20 +32,19 @@ from src.constants.enums import (
     FileType,
     PipelineStage,
 )
-from src.constants.categories import normalize_category
-from src.core.prompts import resume_extraction as prompt
-from src.core.services import embedding_service
+from src.control.agents.prompts import resume_extraction as prompt
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import ParsedDocument, detect_file_type, parser
-from src.core.services.embedding_service import EmbeddingError, EmbeddingQuotaExceeded
 from src.core.services.jd_service import clean_skills
-from src.core.services.llm_client import LLMError, llm
-from src.core.services.storage_service import storage
 from src.data.clients.postgres import AsyncSessionLocal
-from src.data.models.candidate import Candidate
-from src.data.models.document import Document
-from src.data.models.resume_embedding import ResumeEmbedding
-from src.data.models.resume_extraction import ResumeExtraction
+from src.data.clients.storage import storage
+from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.document import Document
+from src.data.models.postgres.resume_embedding import ResumeEmbedding
+from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.handlers.http_clients import embedding_client
+from src.handlers.http_clients.embedding_client import EmbeddingError, EmbeddingQuotaExceeded
+from src.handlers.http_clients.llm_client import LLMError, llm
 
 logger = logging.getLogger("talentiq.resumes")
 
@@ -483,7 +483,7 @@ async def _embed_in_background(batch_id: str, user_id: uuid.UUID) -> None:
             return
         output = {"embeddings": "complete" if left == 0 else "incomplete", "pending": left}
         if left:
-            quota = await embedding_service.quota_status()
+            quota = await embedding_client.quota_status()
             if quota["paused"]:
                 output.update(embeddings="paused", resumes_at=quota["resumes_at"])
         await log_event(
@@ -500,7 +500,7 @@ async def backfill_loop() -> None:
     while True:
         await asyncio.sleep(settings.embedding_backfill_minutes * 60)
         try:
-            if _embed_lock.locked() or (await embedding_service.quota_status())["paused"]:
+            if _embed_lock.locked() or (await embedding_client.quota_status())["paused"]:
                 continue
             if await count_missing_embeddings() == 0:
                 continue
@@ -536,14 +536,14 @@ async def embed_missing(rounds: int = 3, chunk_resumes: int = 25, pause_seconds:
         if skills or roles:
             work.append((candidate_id, extraction.resume_id, skills, roles))
 
-    version = embedding_service.model_version()
+    version = embedding_client.model_version()
     chunks = [work[i:i + chunk_resumes] for i in range(0, len(work), chunk_resumes)]
     for round_number in range(rounds):
         failed_chunks = []
         for chunk in chunks:
             texts = [t for _, _, skills, roles in chunk for t in (skills, roles) if t]
             try:
-                vectors = iter(await embedding_service.embed_texts(texts))
+                vectors = iter(await embedding_client.embed_texts(texts))
             except EmbeddingQuotaExceeded as exc:
                 # Daily quota used up: stop; the backfill loop resumes after the reset.
                 logger.warning("embeddings paused: %s", exc)

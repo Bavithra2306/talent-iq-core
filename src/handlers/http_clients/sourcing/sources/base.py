@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 
-from src.core.sourcing.fetcher import PoliteFetcher
+from src.handlers.http_clients.sourcing.fetcher import PoliteFetcher
 
 PDF_MAGIC = b"%PDF"
 DOCX_MAGIC = b"PK"

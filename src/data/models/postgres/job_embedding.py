@@ -4,7 +4,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Integer, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
-from src.data.models.base import EMBEDDING_DIM, AuditMixin, Base, IdMixin
+from src.data.models.postgres.base import EMBEDDING_DIM, AuditMixin, Base, IdMixin
 
 
 class JobEmbedding(IdMixin, AuditMixin, Base):

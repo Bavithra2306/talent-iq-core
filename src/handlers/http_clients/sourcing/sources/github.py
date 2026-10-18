@@ -10,9 +10,14 @@ import re
 import urllib.parse
 
 from src.config.settings import settings
-from src.core.sourcing.documents import html_text_and_links, text_to_pdf
-from src.core.sourcing.fetcher import FetchError
-from src.core.sourcing.sources.base import SourcedFile, SourceResult, fetcher, is_resume_file
+from src.handlers.http_clients.sourcing.fetcher import FetchError
+from src.handlers.http_clients.sourcing.sources.base import (
+    SourcedFile,
+    SourceResult,
+    fetcher,
+    is_resume_file,
+)
+from src.utils.documents import html_text_and_links, text_to_pdf
 
 API = "https://api.github.com"
 _RESUME_LINK = re.compile(r"(resume|cv|curriculum)", re.I)

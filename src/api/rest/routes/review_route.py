@@ -4,12 +4,8 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response, 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies.auth_dependency import CurrentUser, Role, require_roles
-from src.constants.enums import CandidateStatus
-from src.core.services import review_service
-from src.data.clients.postgres import get_db
-from src.data.models.matching_shortlisting import MatchingShortlisting
-from src.schema.shortlist_schema import (
+from src.api.rest.dependencies import CurrentUser, Role, require_roles
+from src.api.rest.schemas.shortlist_schema import (
     DecisionRequest,
     NotesUpdate,
     ReviewEvent,
@@ -18,6 +14,10 @@ from src.schema.shortlist_schema import (
     ShortlistEntry,
     ShortlistToggle,
 )
+from src.constants.enums import CandidateStatus
+from src.core.services import review_service
+from src.data.clients.postgres import get_db
+from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 
 ReviewRouter = APIRouter(tags=["Review"])
 

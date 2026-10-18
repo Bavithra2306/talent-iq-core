@@ -21,12 +21,12 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from fastapi import HTTPException, status
 from sqlalchemy import Float, String, and_, cast, func, null, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from src.api.dependencies.auth_dependency import CurrentUser
+from src.api.rest.dependencies import CurrentUser
+from src.api.rest.schemas.shortlist_schema import ShortlistFilters, ShortlistRunRequest
 from src.config.settings import settings
 from src.constants.categories import normalize_category
 from src.constants.enums import (
@@ -36,22 +36,22 @@ from src.constants.enums import (
     EmbeddingKind,
     PipelineStage,
 )
-from src.core.prompts import match_explanation, match_scoring
-from src.core.services.query_helpers import skill_clause
+from src.control.agents.prompts import match_explanation, match_scoring
+from src.core.exceptions import BadRequestError, ConflictError, NotFoundError
 from src.core.services import scoring_rules
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.job_embedding_service import refresh_job_embedding
-from src.core.services.llm_client import LLMError, llm
+from src.core.services.query_helpers import skill_clause
 from src.core.services.scoring_rules import Weights
 from src.data.clients.postgres import AsyncSessionLocal
-from src.data.models.candidate import Candidate
-from src.data.models.job import Job
-from src.data.models.job_embedding import JobEmbedding
-from src.data.models.matching_shortlisting import MatchingShortlisting
-from src.data.models.resume_embedding import ResumeEmbedding
-from src.data.models.resume_extraction import ResumeExtraction
-from src.data.models.scoring_config import ScoringConfig
-from src.schema.shortlist_schema import ShortlistFilters, ShortlistRunRequest
+from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.job import Job
+from src.data.models.postgres.job_embedding import JobEmbedding
+from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
+from src.data.models.postgres.resume_embedding import ResumeEmbedding
+from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.data.models.postgres.scoring_config import ScoringConfig
+from src.handlers.http_clients.llm_client import LLMError, llm
 
 logger = logging.getLogger("talentiq.matching")
 
@@ -158,12 +158,11 @@ async def start_run(
 ) -> str:
     job = await db.get(Job, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+        raise NotFoundError("Job not found.")
     if not job.skills:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "The job has no required skills; add them before matching.")
+        raise BadRequestError("The job has no required skills; add them before matching.")
     if job_id in _running_jobs:
-        raise HTTPException(status.HTTP_409_CONFLICT, "A matching run for this job is already in progress.")
+        raise ConflictError("A matching run for this job is already in progress.")
 
     run_id = str(uuid.uuid4())
     _running_jobs.add(job_id)

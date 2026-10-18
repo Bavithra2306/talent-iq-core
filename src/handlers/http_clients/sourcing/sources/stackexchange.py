@@ -9,9 +9,9 @@ import json
 import urllib.parse
 
 from src.config.settings import settings
-from src.core.sourcing.documents import html_text_and_links, text_to_pdf
-from src.core.sourcing.fetcher import FetchError
-from src.core.sourcing.sources.base import SourcedFile, SourceResult, fetcher
+from src.handlers.http_clients.sourcing.fetcher import FetchError
+from src.handlers.http_clients.sourcing.sources.base import SourcedFile, SourceResult, fetcher
+from src.utils.documents import html_text_and_links, text_to_pdf
 
 API = "https://api.stackexchange.com/2.3"
 _filter_id: str | None = None

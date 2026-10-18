@@ -64,8 +64,8 @@ async def _used_today_from_db() -> int:
     from sqlalchemy import func, select
 
     from src.data.clients.postgres import AsyncSessionLocal
-    from src.data.models.job_embedding import JobEmbedding
-    from src.data.models.resume_embedding import ResumeEmbedding
+    from src.data.models.postgres.job_embedding import JobEmbedding
+    from src.data.models.postgres.resume_embedding import ResumeEmbedding
 
     start = datetime.combine(_quota_today(), time(0), QUOTA_TZ)
     async with AsyncSessionLocal() as db:

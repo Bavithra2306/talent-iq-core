@@ -2713,7 +2713,6 @@ dependencies = [
     { name = "torchvision", version = "0.29.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
-    { name = "xlsxwriter" },
 ]
 
 [package.metadata]
@@ -2736,7 +2735,6 @@ requires-dist = [
     { name = "torchvision", index = "https://download.pytorch.org/whl/cpu" },
     { name = "tzdata", specifier = ">=2024.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
-    { name = "xlsxwriter", specifier = ">=3.2.0" },
 ]
 
 [[package]]

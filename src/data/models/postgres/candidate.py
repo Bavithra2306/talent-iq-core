@@ -1,11 +1,11 @@
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Numeric, String, Text, Uuid
+from sqlalchemy import ForeignKey, Index, Numeric, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.constants.enums import CandidateStatus
-from src.data.models.base import AuditMixin, Base, IdMixin, pg_enum
+from src.data.models.postgres.base import AuditMixin, Base, IdMixin, pg_enum
 
 
 class Candidate(IdMixin, AuditMixin, Base):
