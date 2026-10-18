@@ -84,8 +84,8 @@ async def update_job(
     return await jd_service.update_job(db, user, job_id, data)
 
 
-@JobRouter.get("/{job_id}/jd")
-async def download_jd(
+@JobRouter.get("/{job_id}/view")
+async def view_jd(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),

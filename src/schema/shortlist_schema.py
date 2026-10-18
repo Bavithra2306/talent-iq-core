@@ -140,18 +140,6 @@ class DecisionRequest(BaseModel):
     comment: str | None = Field(default=None, max_length=1000)
 
 
-class ShareBackRequest(BaseModel):
-    comment: str | None = Field(default=None, max_length=1000)
-
-
-class ShareBackResult(BaseModel):
-    job_id: uuid.UUID
-    approved: int
-    rejected: int
-    interview_scheduled: int
-    pending: int
-
-
 class ReviewEvent(BaseModel):
     at: datetime
     action: str | None

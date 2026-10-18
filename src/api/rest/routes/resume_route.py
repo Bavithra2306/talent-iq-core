@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.dependencies.auth_dependency import CurrentUser, Role, require_roles
 from src.config.settings import settings
-from src.constants.enums import CandidateStatus
 from src.core.services import candidate_service, resume_service
 from src.core.services.candidate_service import SortField
 from src.data.clients.postgres import get_db
@@ -62,7 +61,10 @@ async def list_candidates(
     skill: str | None = None,
     min_experience: float | None = Query(default=None, ge=0),
     max_experience: float | None = Query(default=None, ge=0),
-    status_filter: CandidateStatus | None = Query(default=None, alias="status"),
+    status_filter: str | None = Query(
+        default=None, alias="status",
+        pattern="^(new|sourced|shortlisted|approved|rejected|interview_scheduled)$",
+        description="new = not matched to any job yet; otherwise the status for at least one job"),
     source_site: str | None = None,
     sort: SortField = "date_added",
     order: str = Query(default="desc", pattern="^(asc|desc)$"),

@@ -13,8 +13,6 @@ from src.schema.shortlist_schema import (
     DecisionRequest,
     NotesUpdate,
     ReviewEvent,
-    ShareBackRequest,
-    ShareBackResult,
     ShareRequest,
     ShareResult,
     ShortlistEntry,
@@ -65,12 +63,6 @@ async def shared_with_me(job_id: uuid.UUID | None = None,
     return await review_service.list_shared(db, user, job_id, status_filter)
 
 
-@ReviewRouter.get("/review/{entry_id}", response_model=ShortlistEntry)
-async def shared_entry(entry_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-                       user: CurrentUser = Depends(hiring_manager_only)):
-    return await review_service.get_shared(db, user, entry_id)
-
-
 @ReviewRouter.get("/review/{entry_id}/resume")
 async def shared_resume(entry_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                         user: CurrentUser = Depends(hiring_manager_only)):
@@ -96,19 +88,12 @@ async def schedule_interview(entry_id: uuid.UUID, db: AsyncSession = Depends(get
     return await review_service.schedule_interview(db, user, entry_id)
 
 
-@ReviewRouter.post("/review/jobs/{job_id}/share-back", response_model=ShareBackResult)
-async def share_back(job_id: uuid.UUID, body: ShareBackRequest, db: AsyncSession = Depends(get_db),
-                     user: CurrentUser = Depends(hiring_manager_only)):
-    """Send my decisions for this job back to the recruiter."""
-    return await review_service.share_back(db, user, job_id, body.comment)
-
-
 # ---------- both ----------
 
-@ReviewRouter.get("/jobs/{job_id}/review-history", response_model=list[ReviewEvent])
+@ReviewRouter.get("/jobs/{job_id}/history", response_model=list[ReviewEvent])
 async def review_history(job_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                          user: CurrentUser = Depends(reviewers)):
-    """Shares, notes, decisions, interviews and share-backs for a job, oldest first."""
+    """Timeline of a job's shortlist: shared, notes, approvals, rejections, interviews (oldest first)."""
     if user.role == Role.HIRING_MANAGER:
         shared = (await db.execute(select(MatchingShortlisting.id).where(
             MatchingShortlisting.job_id == job_id, MatchingShortlisting.shared_to == user.id).limit(1)

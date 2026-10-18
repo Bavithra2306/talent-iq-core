@@ -10,7 +10,7 @@ from src.core.services import export_service, matching_service, shortlist_servic
 from src.core.services.scoring_rules import Weights
 from src.core.services.shortlist_service import SortField
 from src.data.clients.postgres import get_db
-from src.schema.scoring_config_schema import ScoringConfigRead, ScoringConfigUpdate
+from src.schema.scoring_config_schema import ScoringConfigUpdate
 from src.schema.shortlist_schema import (
     LogListResponse,
     ParseFilterRequest,
@@ -43,14 +43,14 @@ def _preview_weights(skill_pct, role_pct, exp_pct, edu_pct) -> Weights | None:
     return weights
 
 
-@ShortlistRouter.post("/shortlists/parse-filter", response_model=ParseFilterResponse)
+@ShortlistRouter.post("/shortlists/nl-filter", response_model=ParseFilterResponse)
 async def parse_filter(body: ParseFilterRequest, _: CurrentUser = Depends(recruiter_only)):
     """Turn text like "5yrs experince in chenai" into corrected, structured filters.
     Show `corrected_text` to the user; if they confirm, send `filters` to the run endpoint."""
     return await shortlist_service.parse_filter(body.text)
 
 
-@ShortlistRouter.post("/jobs/{job_id}/shortlist/run", response_model=RunAccepted,
+@ShortlistRouter.post("/jobs/{job_id}/match", response_model=RunAccepted,
                       status_code=status.HTTP_202_ACCEPTED)
 async def run_shortlist(
     job_id: uuid.UUID, body: ShortlistRunRequest,
@@ -112,20 +112,7 @@ async def all_shortlists(
     return ShortlistListResponse(items=items, total=total, weights=weights.as_dict())
 
 
-@ShortlistRouter.get("/jobs/{job_id}/scoring-config", response_model=ScoringConfigRead)
-async def get_scoring_config(job_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-                             _: CurrentUser = Depends(recruiter_only)):
-    from sqlalchemy import select
-
-    from src.data.models.scoring_config import ScoringConfig
-
-    config = (await db.execute(select(ScoringConfig).where(ScoringConfig.job_id == job_id))).scalar_one_or_none()
-    if config is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Scoring config not found.")
-    return config
-
-
-@ShortlistRouter.put("/jobs/{job_id}/scoring-config", response_model=ShortlistListResponse)
+@ShortlistRouter.put("/jobs/{job_id}/weights", response_model=ShortlistListResponse)
 async def update_weights(
     job_id: uuid.UUID, body: ScoringConfigUpdate,
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(recruiter_only),

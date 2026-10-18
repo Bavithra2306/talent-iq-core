@@ -19,7 +19,9 @@ from src.data.models.audit_log import AuditLog
 from src.data.models.candidate import Candidate
 from src.data.models.document import Document
 from src.data.models.resume_extraction import ResumeExtraction
-from src.schema.candidate_schema import CandidateDetail, CandidateListItem
+from src.data.models.job import Job
+from src.data.models.matching_shortlisting import MatchingShortlisting
+from src.schema.candidate_schema import CandidateDetail, CandidateListItem, JobStatusItem
 from src.schema.ingestion_schema import BatchEvent, BatchStatus, RejectedFile
 
 SortField = Literal["date_added", "name", "experience"]
@@ -107,8 +109,16 @@ def _apply_filters(query, *, category, search, location, skill, min_experience,
         query = query.where(Candidate.total_years_experience >= min_experience)
     if max_experience is not None:
         query = query.where(Candidate.total_years_experience <= max_experience)
-    if status_filter:
-        query = query.where(Candidate.status == status_filter)
+    if status_filter == "new":
+        # Not matched to any job yet.
+        query = query.where(~select(MatchingShortlisting.id)
+                            .where(MatchingShortlisting.candidate_id == Candidate.id).exists())
+    elif status_filter:
+        # Has this status for at least one job.
+        query = query.where(select(MatchingShortlisting.id).where(
+            MatchingShortlisting.candidate_id == Candidate.id,
+            MatchingShortlisting.status == CandidateStatus(status_filter),
+        ).exists())
     if source_site:
         query = query.where(Document.source_site == source_site)
     return query
@@ -116,7 +126,7 @@ def _apply_filters(query, *, category, search, location, skill, min_experience,
 
 async def list_candidates(
     db: AsyncSession, *, category=None, search=None, location=None, skill=None,
-    min_experience=None, max_experience=None, status_filter: CandidateStatus | None = None,
+    min_experience=None, max_experience=None, status_filter: str | None = None,
     source_site=None, sort: SortField = "date_added", descending: bool = True,
     limit: int = 20, offset: int = 0,
 ) -> tuple[list[CandidateListItem], int]:
@@ -140,13 +150,35 @@ async def list_candidates(
     ordering = column.desc().nulls_last() if descending else column.asc().nulls_last()
     rows = (await db.execute(base.order_by(ordering, Candidate.id).limit(limit).offset(offset))).all()
 
+    statuses = await job_statuses(db, [c.id for c, _, _ in rows])
     items = []
     for candidate, skills, site in rows:
         item = CandidateListItem.model_validate(candidate)
         item.skills = skills or []
         item.source_site = site
+        item.job_statuses = statuses.get(candidate.id, [])
         items.append(item)
     return items, total
+
+
+async def job_statuses(db: AsyncSession, candidate_ids: list[uuid.UUID]) -> dict[uuid.UUID, list[JobStatusItem]]:
+    """Each candidate's status for every job they were matched to, best score first."""
+    if not candidate_ids:
+        return {}
+    rows = await db.execute(
+        select(MatchingShortlisting.candidate_id, MatchingShortlisting.job_id, Job.title,
+               MatchingShortlisting.status, MatchingShortlisting.total_score)
+        .join(Job, Job.id == MatchingShortlisting.job_id)
+        .where(MatchingShortlisting.candidate_id.in_(candidate_ids))
+        .order_by(MatchingShortlisting.total_score.desc().nulls_last())
+    )
+    result: dict[uuid.UUID, list[JobStatusItem]] = {}
+    for candidate_id, job_id, title, status_value, score in rows.all():
+        result.setdefault(candidate_id, []).append(JobStatusItem(
+            job_id=job_id, job_title=title, status=status_value,
+            total_score=float(score) if score is not None else None,
+        ))
+    return result
 
 
 async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> CandidateDetail:
@@ -162,6 +194,7 @@ async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> CandidateD
     detail = CandidateDetail.model_validate(candidate)
     detail.source_site = document.source_site
     detail.file_name = document.original_filename
+    detail.job_statuses = (await job_statuses(db, [candidate.id])).get(candidate.id, [])
     if extraction is not None:
         detail.skills = extraction.skills or []
         detail.education = extraction.education

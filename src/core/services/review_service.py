@@ -3,8 +3,8 @@
 Recruiter: notes on any scored candidate, add/remove candidates from the final
 shortlist, share the shortlist with a hiring manager.
 Hiring manager: sees only what was shared with them, approves / rejects (with an
-optional comment), shares the result back, and marks approved candidates as
-"interview scheduled" (a status change only).
+optional comment) and marks approved candidates as "interview scheduled" (a status
+change only). The recruiter sees every decision straight away.
 
 Statuses on matching_shortlisting:
     sourced <-> shortlisted -> (shared) -> approved / rejected -> interview_scheduled
@@ -31,7 +31,7 @@ from src.data.models.document import Document
 from src.data.models.job import Job
 from src.data.models.matching_shortlisting import MatchingShortlisting
 from src.data.models.resume_extraction import ResumeExtraction
-from src.schema.shortlist_schema import ReviewEvent, ShareBackResult, ShareResult, ShortlistEntry
+from src.schema.shortlist_schema import ReviewEvent, ShareResult, ShortlistEntry
 
 REVIEW_ACTIONS = (
     Action.CANDIDATE_ADDED_TO_SHORTLIST, Action.CANDIDATE_REMOVED_FROM_SHORTLIST,
@@ -165,10 +165,6 @@ async def list_shared(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID | N
     return [await to_entry(db, row) for row in (await db.execute(query)).scalars()]
 
 
-async def get_shared(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> ShortlistEntry:
-    return await to_entry(db, await _hm_row(db, user, entry_id))
-
-
 async def shared_resume(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> tuple[Document, bytes]:
     row = await _hm_row(db, user, entry_id)
     document = await db.get(Document, row.resume_id)
@@ -201,27 +197,6 @@ async def schedule_interview(db: AsyncSession, user: CurrentUser, entry_id: uuid
     await db.commit()
     await _log(user, Action.INTERVIEW_SCHEDULED, row)
     return await to_entry(db, row)
-
-
-async def share_back(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID,
-                     comment: str | None) -> ShareBackResult:
-    rows = list((await db.execute(
-        select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id,
-                                           MatchingShortlisting.shared_to == user.id)
-    )).scalars())
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Nothing was shared with you for this job.")
-    count = lambda s: sum(1 for r in rows if r.status == s)  # noqa: E731
-    result = ShareBackResult(
-        job_id=job_id, approved=count(CandidateStatus.APPROVED),
-        rejected=count(CandidateStatus.REJECTED),
-        interview_scheduled=count(CandidateStatus.INTERVIEW_SCHEDULED),
-        pending=count(CandidateStatus.SHORTLISTED),
-    )
-    recruiters = sorted({str(r.shared_by) for r in rows if r.shared_by})
-    await _log(user, Action.SHORTLIST_RETURNED, job_id, recruiters=recruiters,
-               comment=(comment or "").strip() or None, **result.model_dump(exclude={"job_id"}))
-    return result
 
 
 # ---------- history ----------

@@ -31,9 +31,20 @@ class CandidateRead(CandidateBase, AuditRead):
     current_resume_id: uuid.UUID
 
 
+class JobStatusItem(BaseModel):
+    """Where a candidate stands for one job (statuses are per job)."""
+
+    job_id: uuid.UUID
+    job_title: str
+    status: CandidateStatus
+    total_score: float | None = None
+
+
 class CandidateListItem(CandidateRead):
     skills: list[str] = []
     source_site: str | None = None
+    # Empty means "New": not matched to any job yet.
+    job_statuses: list[JobStatusItem] = []
 
 
 class CandidateListResponse(BaseModel):
