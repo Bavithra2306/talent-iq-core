@@ -39,7 +39,7 @@ from src.constants.enums import (
 from src.control.agents.prompts import match_explanation, match_scoring
 from src.core.exceptions import BadRequestError, ConflictError, NotFoundError
 from src.core.services import scoring_rules
-from src.core.services.audit_service import log_event, utcnow
+from src.core.services.audit_service import log_event
 from src.core.services.job_embedding_service import refresh_job_embedding
 from src.core.services.query_helpers import skill_clause
 from src.core.services.scoring_rules import Weights
@@ -178,7 +178,7 @@ async def start_run(
     return run_id
 
 
-async def _stage(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, state: RunProgress,
+async def log_stage(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, state: RunProgress,
                  stage: PipelineStage, action: Action | None = None,
                  category: ActionCategory = ActionCategory.SHORTLISTING, **output) -> None:
     state.stage = stage.value
@@ -191,73 +191,20 @@ async def _stage(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, state: RunP
 # ---------- the run ----------
 
 async def _run(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, request: ShortlistRunRequest) -> None:
+    """Runs the matching graph (src/control/agents/matching_graph.py) for one run."""
+    from src.control.agents.matching_graph import matching_graph
+
     state = progress[run_id]
-    started = utcnow()
-    stage = lambda s, **kw: _stage(run_id, user_id, job_id, state, s, **kw)  # noqa: E731
     try:
         async with AsyncSessionLocal() as db:
-            job = await db.get(Job, job_id)
-            weights = await load_weights(db, job_id)
-            top_k = request.top_k
-            signature = job_signature(job)
-
-            # 1. Collecting
-            await stage(PipelineStage.COLLECTING)
-            job_vectors = await _job_vectors(db, job, user_id)
-            pool_size = min(settings.pool_max, max(settings.pool_min, top_k * settings.pool_multiplier))
-            pool, matching_total = await _select_pool(db, request.filters, pool_size, job_vectors)
-            state.pool = len(pool)
-            if not pool:
-                await _unrank_all(db, job_id)
-                await db.commit()
-                await stage(PipelineStage.SHORTLISTED, finished=True, pool=0, matching=0,
-                            scored=0, from_cache=0, shortlisted=0, failed=0,
-                            note="No candidates match the filters.",
-                            seconds=round(time.monotonic() - state.started_at, 1))
-                return
-
-            # 2. Reading
-            await stage(PipelineStage.READING, pool=len(pool), matching=matching_total)
-            await _apply_cache(db, job, pool, signature)
-            state.from_cache = sum(p.from_cache for p in pool)
-
-            # 3. Scoring
-            await stage(PipelineStage.SCORING, action=Action.SCORING_STARTED,
-                        category=ActionCategory.SCORING, to_score=len(pool) - state.from_cache,
-                        from_cache=state.from_cache)
-            failed = await _llm_score(job, [p for p in pool if p.required is None])
-            state.failed = len(failed)
-            scored = [p for p in pool if p.required is not None]
-            state.scored = len(scored)
-
-            await _persist(db, user_id, job, scored, weights, signature, top_k, pool_ids={p.candidate.id for p in pool})
-            await db.commit()
-            await stage(PipelineStage.SCORING, action=Action.SCORING_FINISHED,
-                        category=ActionCategory.SCORING, scored=len(scored), failed=len(failed))
-
-            # 4. Explanations for the shortlisted candidates (best effort)
-            top_rows = await _top_rows(db, job_id, top_k)
-            state.shortlisted = len(top_rows)
-            await generate_explanations(db, job, top_rows, weights)
-            await db.commit()
-
-            summary = {
-                "finished": True, "pool": len(pool), "matching": matching_total,
-                "scored": len(scored), "from_cache": state.from_cache,
-                "shortlisted": len(top_rows), "failed": len(failed),
-                "seconds": round(time.monotonic() - state.started_at, 1),
-            }
-            if failed and not scored:
-                await stage(PipelineStage.FAILED, action=Action.SCORING_FAILED,
-                            category=ActionCategory.SCORING, **summary)
-            elif failed:
-                await stage(PipelineStage.PARTLY_COMPLETED, **summary)
-            else:
-                await stage(PipelineStage.SHORTLISTED, action=Action.SHORTLISTING_CREATED, **summary)
+            await matching_graph.ainvoke(
+                {"run_id": run_id, "user_id": user_id, "job_id": job_id, "request": request},
+                config={"configurable": {"db": db}},
+            )
     except Exception as exc:
         logger.exception("matching run %s crashed", run_id)
-        await stage(PipelineStage.FAILED, action=Action.SCORING_FAILED, category=ActionCategory.SCORING,
-                    finished=True, error=str(exc)[:300])
+        await log_stage(run_id, user_id, job_id, state, PipelineStage.FAILED, action=Action.SCORING_FAILED,
+                        category=ActionCategory.SCORING, finished=True, error=str(exc)[:300])
     finally:
         state.finished = True
         _running_jobs.discard(job_id)
@@ -265,7 +212,7 @@ async def _run(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, request: Shor
 
 # ---------- step 1: candidate pool ----------
 
-async def _job_vectors(db: AsyncSession, job: Job, user_id: uuid.UUID) -> tuple[list[float] | None, list[float] | None]:
+async def job_vectors(db: AsyncSession, job: Job, user_id: uuid.UUID) -> tuple[list[float] | None, list[float] | None]:
     row = (await db.execute(select(JobEmbedding).where(JobEmbedding.job_id == job.id).limit(1))).scalar_one_or_none()
     if row is None or (row.skill_vector is None and row.role_vector is None):
         if await refresh_job_embedding(db, job, user_id):
@@ -277,7 +224,7 @@ async def _job_vectors(db: AsyncSession, job: Job, user_id: uuid.UUID) -> tuple[
     return skill, role
 
 
-async def _select_pool(
+async def select_pool(
     db: AsyncSession, filters: ShortlistFilters, pool_size: int,
     job_vectors: tuple[list[float] | None, list[float] | None],
 ) -> tuple[list[Pending], int]:
@@ -306,7 +253,7 @@ async def _select_pool(
 
 # ---------- step 2: reuse stored scores ----------
 
-async def _apply_cache(db: AsyncSession, job: Job, pool: list[Pending], signature: str) -> None:
+async def apply_cache(db: AsyncSession, job: Job, pool: list[Pending], signature: str) -> None:
     rows = (await db.execute(
         select(MatchingShortlisting).where(
             MatchingShortlisting.job_id == job.id,
@@ -377,7 +324,7 @@ async def _score_group(job: Job, group: list[Pending]) -> list[Pending]:
     return missed
 
 
-async def _llm_score(job: Job, todo: list[Pending]) -> list[Pending]:
+async def llm_score(job: Job, todo: list[Pending]) -> list[Pending]:
     """Score all candidates; anything missed is retried one by one. Returns the failures."""
     if not todo:
         return []
@@ -415,7 +362,7 @@ def _explanation_dict(job: Job, p: Pending, signature: str) -> dict:
     }
 
 
-async def _persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[Pending],
+async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[Pending],
                    weights: Weights, signature: str, top_k: int, pool_ids: set[uuid.UUID]) -> None:
     existing = {
         r.candidate_id: r for r in (await db.execute(
@@ -466,14 +413,14 @@ def _set_shortlist_status(row: MatchingShortlisting, shortlisted: bool) -> None:
         row.status = CandidateStatus.SHORTLISTED if shortlisted else CandidateStatus.SOURCED
 
 
-async def _unrank_all(db: AsyncSession, job_id: uuid.UUID) -> None:
+async def unrank_all(db: AsyncSession, job_id: uuid.UUID) -> None:
     rows = (await db.execute(select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id))).scalars()
     for row in rows:
         row.rank = None
         _set_shortlist_status(row, False)
 
 
-async def _top_rows(db: AsyncSession, job_id: uuid.UUID, top_k: int) -> list[MatchingShortlisting]:
+async def top_rows(db: AsyncSession, job_id: uuid.UUID, top_k: int) -> list[MatchingShortlisting]:
     return list((await db.execute(
         select(MatchingShortlisting)
         .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.rank.is_not(None),

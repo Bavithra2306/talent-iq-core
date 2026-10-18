@@ -21,6 +21,7 @@ dependencies = [
     "torchvision",
     "tzdata>=2024.1",
     "uvicorn[standard]>=0.54.0",
+    "langgraph>=1.2.16",
 ]
 
 # CPU-only PyTorch for Docling (avoids multi-GB CUDA wheels in the image)

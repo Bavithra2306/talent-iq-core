@@ -34,7 +34,7 @@ from src.constants.enums import (
 )
 from src.control.agents.prompts import resume_extraction as prompt
 from src.core.services.audit_service import log_event, utcnow
-from src.core.services.document_parser import ParsedDocument, detect_file_type, parser
+from src.core.services.document_parser import ParsedDocument, detect_file_type
 from src.core.services.jd_service import clean_skills
 from src.data.clients.postgres import AsyncSessionLocal
 from src.data.clients.storage import storage
@@ -221,7 +221,7 @@ async def accept_uploads(
 
 # ---------- background pipeline ----------
 
-async def _stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, state: BatchProgress,
+async def log_stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, state: BatchProgress,
                  action: Action | None = None, **output) -> None:
     state.stage = stage.value
     await log_event(
@@ -230,7 +230,7 @@ async def _stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, state:
     )
 
 
-async def _fail(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: BatchItem,
+async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: BatchItem,
                 reason: str, *, delete_file: bool = False) -> None:
     state.failed += 1
     state.failures.append({"filename": item.filename, "reason": reason})
@@ -253,65 +253,16 @@ async def _fail(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: B
 
 
 async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) -> None:
+    """Runs the ingestion graph (src/control/agents/ingestion_graph.py) for one batch."""
+    from src.control.agents.ingestion_graph import ingestion_graph
+
     state = progress[batch_id]
-    started = utcnow()
     try:
-        await _stage(batch_id, user_id, PipelineStage.COLLECTING, state, files=len(items))
-        await _stage(batch_id, user_id, PipelineStage.READING, state, files=len(items))
-
-        parse_slots = asyncio.Semaphore(max(1, settings.parse_workers) * 2)
-        done_queue: asyncio.Queue = asyncio.Queue()
-
-        async def parse_one(item: BatchItem) -> None:
-            async with parse_slots:
-                try:
-                    data = storage.read(item.storage_key)
-                    result: ParsedDocument | Exception = await parser.parse(data, item.filename)
-                except Exception as exc:
-                    result = exc
-            await done_queue.put((item, result))
-
-        parsers = [asyncio.create_task(parse_one(i)) for i in items]
-        group: list[tuple[BatchItem, ParsedDocument]] = []
-        extractors: list[asyncio.Task] = []
-
-        for _ in items:
-            item, result = await done_queue.get()
-            state.parsed += 1
-            if isinstance(result, Exception):
-                logger.warning("parse failed for %s: %s", item.filename, result)
-                await _fail(batch_id, user_id, state, item, "The file could not be read.")
-                continue
-            if not result.text.strip():
-                await _fail(batch_id, user_id, state, item, "No text could be read from the file.")
-                continue
-            group.append((item, result))
-            if len(group) >= settings.extract_batch_size:
-                extractors.append(asyncio.create_task(_process_group(batch_id, user_id, state, group)))
-                group = []
-        if group:
-            extractors.append(asyncio.create_task(_process_group(batch_id, user_id, state, group)))
-
-        await asyncio.gather(*parsers, *extractors)
-
-        # Embeddings are filled in by a background task: Gemini's free quota (about 100
-        # texts a minute) is slower than extraction and shouldn't hold the batch open.
-        summary = {
-            "finished": True, "total": state.total, "saved": state.saved,
-            "failed": state.failed, "embeddings_pending": await count_missing_embeddings(),
-            "seconds": round(time.monotonic() - state.started_at, 1),
-        }
-        if state.failed == 0:
-            await _stage(batch_id, user_id, PipelineStage.READING, state,
-                         action=Action.EXTRACTION_COMPLETED, **summary)
-        elif state.saved > 0:
-            await _stage(batch_id, user_id, PipelineStage.PARTLY_COMPLETED, state, **summary)
-        else:
-            await _stage(batch_id, user_id, PipelineStage.FAILED, state, **summary)
+        await ingestion_graph.ainvoke({"batch_id": batch_id, "user_id": user_id, "items": items})
     except Exception as exc:
         logger.exception("batch %s crashed", batch_id)
-        await _stage(batch_id, user_id, PipelineStage.FAILED, state,
-                     finished=True, error=str(exc)[:300])
+        await log_stage(batch_id, user_id, PipelineStage.FAILED, state,
+                        finished=True, error=str(exc)[:300])
     finally:
         state.finished = True
         task = asyncio.create_task(_embed_in_background(batch_id, user_id))
@@ -330,7 +281,7 @@ async def _extract_group(texts: list[str]) -> tuple[dict[int, prompt.ExtractedRe
     return {r.index: r for r in batch.results if 1 <= r.index <= len(texts)}, model
 
 
-async def _process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
+async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
                          group: list[tuple[BatchItem, ParsedDocument]]) -> None:
     """Extract, embed and save one group of resumes. Never raises."""
     try:
@@ -357,14 +308,14 @@ async def _process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress
             pending = still_pending
 
         for position in pending:
-            await _fail(batch_id, user_id, state, group[position - 1][0],
+            await fail_item(batch_id, user_id, state, group[position - 1][0],
                         "The AI service could not read this resume. Please upload it again.")
 
         valid: list[tuple[BatchItem, ParsedDocument, prompt.ExtractedResume, str]] = []
         for position, (result, model) in sorted(extracted.items()):
             item, parsed = group[position - 1]
             if result.document_type != "resume":
-                await _fail(batch_id, user_id, state, item,
+                await fail_item(batch_id, user_id, state, item,
                             f"This file doesn't look like a resume (it looks like: {result.document_type}).",
                             delete_file=True)
             else:
@@ -383,7 +334,7 @@ async def _process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress
         logger.exception("group failed in batch %s", batch_id)
         for item, _ in group:
             if not any(f["filename"] == item.filename for f in state.failures):
-                await _fail(batch_id, user_id, state, item, f"Unexpected error: {str(exc)[:120]}")
+                await fail_item(batch_id, user_id, state, item, f"Unexpected error: {str(exc)[:120]}")
 
 
 async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, parsed: ParsedDocument,

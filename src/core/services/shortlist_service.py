@@ -208,7 +208,7 @@ async def _refresh_explanations(job_id: uuid.UUID, top_k: int, weights: Weights)
     try:
         async with AsyncSessionLocal() as db:
             job = await db.get(Job, job_id)
-            rows = await matching_service._top_rows(db, job_id, top_k)
+            rows = await matching_service.top_rows(db, job_id, top_k)
             await matching_service.generate_explanations(db, job, rows, weights)
             await db.commit()
     except Exception:
