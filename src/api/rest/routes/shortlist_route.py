@@ -25,7 +25,7 @@ ShortlistRouter = APIRouter(tags=["Shortlisting"])
 
 # Recruiters run matching and tune it; hiring managers/admins can read logs.
 recruiter_only = require_roles(Role.RECRUITER)
-log_readers = require_roles(Role.RECRUITER, Role.HIRING_MANAGER, Role.ADMIN)
+log_readers = require_roles(Role.RECRUITER, Role.ADMIN)
 
 
 def _preview_weights(skill_pct, role_pct, exp_pct, edu_pct) -> Weights | None:

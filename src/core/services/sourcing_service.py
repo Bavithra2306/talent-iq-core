@@ -74,7 +74,7 @@ def catalog() -> list[SourceInfo]:
             example={"type": "stackexchange", "tag": "python", "max_results": 10},
         ),
         SourceInfo(
-            type="url", name="Links you paste",
+            type="url", name="Your own links",
             description="Paste links to resume files (PDF or Word) or to personal websites; we look for a resume "
                         "on the page, otherwise we use the page text.",
             parameters={"urls": "up to 20 links", "follow_links": True},
