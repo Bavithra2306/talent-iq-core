@@ -54,6 +54,17 @@ def _convert(data: bytes, filename: str, kind: str) -> str:
     return result.document.export_to_markdown().strip()
 
 
+def parse_any(data: bytes, kind: str) -> tuple[str, bool]:
+    """Read a PDF, DOCX, JPG or PNG with Docling (OCR runs on scans and photos).
+
+    ``kind`` is the detected content type; the stream is named after it because
+    Docling picks its reader from the extension.
+    """
+    extension = {"jpeg": "jpg"}.get(kind, kind)
+    text = _convert(data, f"document.{extension}", "docx")  # the all-formats converter
+    return text, kind in ("jpeg", "png")
+
+
 def _pdf_text_layer(data: bytes) -> str:
     from pypdf import PdfReader
 
@@ -75,16 +86,17 @@ def _text_is_usable(text: str) -> bool:
 
 def parse_bytes(data: bytes, filename: str, is_docx: bool, fast_pdf: bool) -> tuple[str, bool]:
     """Returns (text, was_scanned)."""
+    # Docling picks its reader from the name, so name the stream after what the file really is.
     if is_docx:
-        return _convert(data, filename, "docx"), False
+        return _convert(data, "document.docx", "docx"), False
 
     layer = _pdf_text_layer(data)
     if fast_pdf and _text_is_usable(layer):
         return layer, False
     if len(layer) >= MIN_TEXT_CHARS:
         # Has text but fast path is off or the text is garbled: use the full layout pipeline.
-        text = _convert(data, filename, "pdf")
+        text = _convert(data, "document.pdf", "pdf")
         if _text_is_usable(text):
             return text, False
     # No usable text layer: a scanned PDF, so read it with OCR.
-    return _convert(data, filename, "pdf_ocr"), True
+    return _convert(data, "document.pdf", "pdf_ocr"), True

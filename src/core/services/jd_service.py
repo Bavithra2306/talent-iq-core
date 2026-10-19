@@ -35,6 +35,7 @@ from src.data.models.postgres.job import Job
 from src.data.models.postgres.scoring_config import ScoringConfig
 from src.handlers.http_clients.llm_client import LLMError, llm
 from src.schema.job_schema import JobCreate, JobUpdate
+from src.utils.file_types import Kind, detect_kind
 
 logger = logging.getLogger("talentiq.jd")
 
@@ -62,17 +63,21 @@ def split_skill_lists(skills, nice) -> tuple[list[str], list[str]]:
     return required, [s for s in clean_skills(nice) if s.lower() not in required_keys]
 
 
-def validate_pdf(filename: str, data: bytes) -> None:
+JD_KINDS = {Kind.PDF, Kind.DOCX, Kind.JPEG, Kind.PNG}
+
+
+def validate_jd_file(data: bytes) -> Kind:
+    """A JD is one PDF (text or scanned), DOCX, JPG or PNG, judged by its content."""
     if not data:
         raise BadRequestError("The file is empty.")
-    if len(data) > settings.max_upload_bytes:
+    if len(data) > settings.max_jd_bytes:
         raise FileTooLargeError(
-            f"The file is larger than {settings.max_upload_bytes // (1024 * 1024)} MB.",
+            f"The file is larger than {settings.max_jd_bytes // (1024 * 1024)} MB.",
         )
-    if not filename.lower().endswith(".pdf") or not data.startswith(b"%PDF"):
-        raise UnsupportedFileError(
-            "The JD must be a PDF file."
-        )
+    kind = detect_kind(data)
+    if kind not in JD_KINDS:
+        raise UnsupportedFileError("The JD must be a PDF, Word (DOCX), JPG or PNG file.")
+    return kind
 
 
 def _write(pdf: FPDF, height: float, text: str) -> None:
@@ -121,6 +126,7 @@ async def _store_document(
     data: bytes,
     file_hash: str,
     source_type: str,
+    kind: Kind = Kind.PDF,
 ) -> Document:
     stored_filename, key = storage.save(JD_FOLDER, filename, data)
     document = Document(
@@ -130,7 +136,8 @@ async def _store_document(
         original_filename=filename,
         stored_filename=stored_filename,
         file_hash=file_hash,
-        file_type=FileType.PDF,
+        # Photos have no matching file_type value, so it stays empty for them.
+        file_type={Kind.PDF: FileType.PDF, Kind.DOCX: FileType.DOCX}.get(kind),
         file_size=len(data),
         file_path=key,
     )
@@ -144,7 +151,7 @@ async def _store_document(
 async def extract_jd(
     db: AsyncSession, user: CurrentUser, filename: str, data: bytes
 ) -> JobExtractResponse:
-    validate_pdf(filename, data)
+    kind = validate_jd_file(data)
     file_hash = hashlib.sha256(data).hexdigest()
     warnings: list[str] = []
 
@@ -155,7 +162,7 @@ async def extract_jd(
     if document is None:
         document = await _store_document(
             db, user=user, filename=filename, data=data,
-            file_hash=file_hash, source_type="uploaded",
+            file_hash=file_hash, source_type="uploaded", kind=kind,
         )
         await db.commit()
     elif document.document_type != DOC_TYPE_JD:
@@ -174,7 +181,7 @@ async def extract_jd(
     # Parse
     started = utcnow()
     try:
-        parsed = await parser.parse_pdf(data, filename)
+        parsed = await parser.parse_jd(data)
     except Exception as exc:
         logger.exception("JD parse failed")
         await log_event(
@@ -183,7 +190,7 @@ async def extract_jd(
             output_data=str(exc), start_time=started,
         )
         raise UnprocessableError(
-            "The PDF could not be read."
+            "The file could not be read. Please upload a clearer file."
         ) from exc
     await log_event(
         user_id=user.id, category=ActionCategory.EXTRACTION,
@@ -192,12 +199,9 @@ async def extract_jd(
         output_data={"chars": len(parsed.text), "scanned": parsed.is_scanned},
         start_time=started,
     )
-    if parsed.is_scanned and document.file_type != FileType.SCANNED_PDF:
-        document.file_type = FileType.SCANNED_PDF
-        await db.commit()
     if not parsed.text.strip():
         raise UnprocessableError(
-            "No text could be read from the PDF."
+            "We couldn't read any text from this file. Please upload a clearer file, or fill in the form by hand."
         )
 
     # LLM: classify + extract

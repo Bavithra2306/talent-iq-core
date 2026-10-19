@@ -2,7 +2,6 @@ import uuid
 
 from pydantic import BaseModel, Field
 
-
 EMBEDDING_DIM = 768
 
 

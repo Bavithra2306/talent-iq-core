@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser, Role, require_roles
@@ -10,10 +10,10 @@ from src.api.rest.schemas.candidate_schema import (
     CategoryCount,
 )
 from src.api.rest.schemas.ingestion_schema import BatchStatus, UploadResponse
-from src.config.settings import settings
-from src.core.services import candidate_service, resume_service
+from src.core.services import candidate_service, resume_service, upload_intake
 from src.core.services.candidate_service import SortField
 from src.data.clients.postgres import get_db
+from src.utils.file_types import media_type
 
 ResumeRouter = APIRouter(tags=["Resumes"])
 
@@ -25,21 +25,21 @@ recruiter_only = require_roles(Role.RECRUITER)
     "/resumes/upload", response_model=UploadResponse, status_code=status.HTTP_202_ACCEPTED
 )
 async def upload_resumes(
-    files: list[UploadFile] = File(..., description="PDF or DOCX resumes (scanned PDFs are OCR'd)"),
+    files: list[UploadFile] = File(
+        ..., description="Up to 150 PDF/DOCX resumes (scanned PDFs are OCR'd), or one zip file"
+    ),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(recruiter_only),
 ):
-    """Upload resumes in bulk. Returns a batch id at once; poll /resumes/batches/{id} for progress."""
-    if len(files) > settings.max_resumes_per_upload:
-        raise HTTPException(
-            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            f"At most {settings.max_resumes_per_upload} files per upload.",
-        )
-    uploads = [
-        resume_service.UploadedFile(filename=f.filename or "resume", data=await f.read())
-        for f in files
-    ]
-    result = await resume_service.accept_uploads(db, user, uploads)
+    """Upload resumes: separate files, or one zip. Returns a batch id at once.
+
+    Every file is judged by its content, not its name. Files that are not PDF or DOCX
+    are skipped and listed with the reason; poll /resumes/batches/{id} for progress.
+    """
+    intake = await upload_intake.collect(files)
+    result = await resume_service.accept_uploads(
+        db, user, intake.uploads, pre_rejected=intake.rejected
+    )
     return UploadResponse(batch_id=result.batch_id, accepted=result.accepted, rejected=result.rejected)
 
 
@@ -108,9 +108,7 @@ async def download_resume(
 ):
     document, content = await candidate_service.get_resume_file(db, candidate_id)
     filename = (document.original_filename or "resume").replace('"', "")
-    media = "application/pdf" if filename.lower().endswith(".pdf") else \
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     return Response(
-        content=content, media_type=media,
+        content=content, media_type=media_type(content),
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )

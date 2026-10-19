@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # (about 3.5 s per file on CPU, so 100 resumes take several minutes).
     pdf_fast_path: bool = True
     extract_batch_size: int = 8  # resumes per LLM request
-    max_resumes_per_upload: int = 200
+    max_resumes_per_upload: int = 150  # files per upload (or files inside one zip)
 
     # Resume sourcing (all optional keys raise the free rate limits)
     github_token: str | None = None
@@ -97,7 +97,9 @@ class Settings(BaseSettings):
     storage_backend: str = "local"
     local_storage_dir: str = "storage"
     gcs_bucket: str | None = None
-    max_upload_bytes: int = 10 * 1024 * 1024
+    max_upload_bytes: int = 5 * 1024 * 1024  # one resume file
+    max_upload_total_bytes: int = 350 * 1024 * 1024  # a whole upload, or a zip once unpacked
+    max_jd_bytes: int = 10 * 1024 * 1024  # one JD file
 
     model_config = SettingsConfigDict(
         env_file=".env.docker",

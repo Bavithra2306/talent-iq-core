@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from src.config.settings import settings
 from src.constants.enums import FileType
 from src.core.services import parse_worker
+from src.utils.file_types import Kind, detect_kind
 
 logger = logging.getLogger("talentiq.parser")
 
@@ -25,12 +26,12 @@ class ParsedDocument:
     is_scanned: bool
 
 
-def detect_file_type(filename: str, data: bytes) -> FileType | None:
-    """PDF or DOCX judged by extension and magic bytes (scanned PDFs are found while parsing)."""
-    name = filename.lower()
-    if name.endswith(".pdf") and data.startswith(b"%PDF"):
+def detect_file_type(data: bytes) -> FileType | None:
+    """PDF or DOCX judged by the file's content only (scanned PDFs are found while parsing)."""
+    kind = detect_kind(data)
+    if kind is Kind.PDF:
         return FileType.PDF
-    if name.endswith(".docx") and data.startswith(b"PK"):
+    if kind is Kind.DOCX:
         return FileType.DOCX
     return None
 
@@ -52,7 +53,7 @@ class DocumentParser:
         return self._pool
 
     async def parse(self, data: bytes, filename: str) -> ParsedDocument:
-        is_docx = filename.lower().endswith(".docx")
+        is_docx = detect_kind(data) is Kind.DOCX
         loop = asyncio.get_running_loop()
         for attempt in (1, 2):
             try:
@@ -77,9 +78,13 @@ class DocumentParser:
         )
         logger.info("parser ready: %d worker processes", len(set(started)))
 
-    # Kept for the JD flow.
-    async def parse_pdf(self, data: bytes, filename: str) -> ParsedDocument:
-        return await self.parse(data, filename)
+    async def parse_jd(self, data: bytes) -> ParsedDocument:
+        """Job descriptions (PDF, scanned PDF, DOCX, JPG, PNG) are all read by Docling alone."""
+        loop = asyncio.get_running_loop()
+        text, scanned = await loop.run_in_executor(
+            self._get_pool(), parse_worker.parse_any, data, detect_kind(data).value
+        )
+        return ParsedDocument(text=text, is_scanned=scanned)
 
 
 parser = DocumentParser()

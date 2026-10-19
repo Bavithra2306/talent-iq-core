@@ -45,6 +45,7 @@ from src.data.models.postgres.resume_extraction import ResumeExtraction
 from src.handlers.http_clients import embedding_client
 from src.handlers.http_clients.embedding_client import EmbeddingError, EmbeddingQuotaExceeded
 from src.handlers.http_clients.llm_client import LLMError, llm
+from src.utils.file_types import LABELS, detect_kind
 
 logger = logging.getLogger("talentiq.resumes")
 
@@ -127,9 +128,14 @@ async def accept_uploads(
     source_type: str = "uploaded",
     source_site: str | None = None,
     batch_id: str | None = None,
+    pre_rejected: list[dict] | None = None,
 ) -> UploadResult:
-    """Validate and store files, then start the background pipeline."""
-    rejected: list[dict] = []
+    """Validate and store files, then start the background pipeline.
+
+    Files are judged by their content, never by their name. ``pre_rejected`` carries
+    files already refused earlier (for example the wrong types found inside a zip).
+    """
+    rejected: list[dict] = list(pre_rejected or [])
     candidates: list[tuple[UploadedFile, FileType, str]] = []
     seen_hashes: set[str] = set()
 
@@ -142,8 +148,8 @@ async def accept_uploads(
                 "filename": name,
                 "reason": f"Larger than {settings.max_upload_bytes // (1024 * 1024)} MB.",
             })
-        elif (file_type := detect_file_type(name, upload.data)) is None:
-            rejected.append({"filename": name, "reason": "Only PDF and DOCX files are accepted."})
+        elif (file_type := detect_file_type(upload.data)) is None:
+            rejected.append({"filename": name, "reason": _unsupported_reason(upload.data)})
         else:
             digest = hashlib.sha256(upload.data).hexdigest()
             if digest in seen_hashes:
@@ -217,6 +223,12 @@ async def accept_uploads(
         accepted=[{"document_id": str(i.document_id), "filename": i.filename} for i in items],
         rejected=rejected,
     )
+
+
+def _unsupported_reason(data: bytes) -> str:
+    kind = detect_kind(data)
+    seen = "" if kind.value == "unknown" else f" (this is {LABELS[kind]})"
+    return f"Only PDF and DOCX files are accepted{seen}."
 
 
 # ---------- background pipeline ----------

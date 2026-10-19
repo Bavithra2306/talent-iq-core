@@ -18,6 +18,7 @@ from src.constants.enums import CandidateStatus
 from src.core.services import review_service
 from src.data.clients.postgres import get_db
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
+from src.utils.file_types import media_type
 
 ReviewRouter = APIRouter(tags=["Review"])
 
@@ -68,9 +69,7 @@ async def shared_resume(entry_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                         user: CurrentUser = Depends(hiring_manager_only)):
     document, content = await review_service.shared_resume(db, user, entry_id)
     filename = (document.original_filename or "resume").replace('"', "")
-    media = "application/pdf" if filename.lower().endswith(".pdf") else \
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    return Response(content=content, media_type=media,
+    return Response(content=content, media_type=media_type(content),
                     headers={"Content-Disposition": f'inline; filename="{filename}"'})
 
 

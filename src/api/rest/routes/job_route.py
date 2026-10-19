@@ -14,6 +14,7 @@ from src.constants.enums import JobStatus
 from src.core.services import jd_service
 from src.data.clients.postgres import get_db
 from src.schema.job_schema import JobCreate, JobRead, JobUpdate
+from src.utils.file_types import media_type
 
 JobRouter = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -23,11 +24,11 @@ can_manage_jobs = require_roles(Role.RECRUITER, Role.HIRING_MANAGER)
 
 @JobRouter.post("/extract", response_model=JobExtractResponse)
 async def extract_jd(
-    file: UploadFile = File(..., description="JD as a PDF"),
+    file: UploadFile = File(..., description="JD as PDF, scanned PDF, DOCX, JPG or PNG (max 10 MB)"),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(can_manage_jobs),
 ):
-    """Upload a JD PDF and get the extracted fields to review. Nothing is saved as a job yet."""
+    """Upload a JD file and get the extracted fields to review. Nothing is saved as a job yet."""
     data = await file.read()
     return await jd_service.extract_jd(db, user, file.filename or "jd.pdf", data)
 
@@ -89,6 +90,6 @@ async def view_jd(
     filename = (document.original_filename or "jd.pdf").replace('"', "")
     return Response(
         content=content,
-        media_type="application/pdf",
+        media_type=media_type(content),
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
