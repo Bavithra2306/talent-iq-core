@@ -67,6 +67,7 @@ class RunProgress:
     pool: int = 0
     below_threshold: int = 0
     not_indexed: int = 0
+    threshold: float | None = None  # similarity level used for this run
     scored: int = 0
     from_cache: int = 0
     shortlisted: int = 0
@@ -175,7 +176,7 @@ async def start_run(
         user_id=user.id, category=ActionCategory.SHORTLISTING, stage=PipelineStage.CREATED,
         job_id=job_id,
         input_data={"run_id": run_id, "category": job.category,
-                    "similarity_threshold": settings.match_similarity_threshold},
+                    "similarity_levels": settings.match_similarity_levels},
     )
     task = asyncio.create_task(_run(run_id, user.id, job_id, request))
     _background.add(task)
@@ -242,11 +243,12 @@ def combined_similarity(sim_skill: float | None, sim_role: float | None) -> floa
 
 async def select_candidates(
     db: AsyncSession, job: Job, job_vectors: tuple[list[float] | None, list[float] | None],
-) -> tuple[list[Pending], int, int, int]:
+) -> tuple[list[Pending], int, int, int, float]:
     """Every resume in the job's category, compared with the job.
 
-    Returns (candidates with similarity >= threshold, best first; number considered;
-    number below the threshold; number without a search index yet).
+    Uses the first similarity level (0.75) that at least one resume reaches, falling back
+    to the next ones (0.60, then 0.50). Returns (candidates at or above that level, best
+    first; number considered; number below it; number without a search index yet; level).
     """
     skill_vec, role_vec = job_vectors
     skill_emb, role_emb = aliased(ResumeEmbedding), aliased(ResumeEmbedding)
@@ -265,20 +267,24 @@ async def select_candidates(
         query = query.where(Candidate.category == category)
     rows = (await db.execute(query)).all()
 
-    threshold = settings.match_similarity_threshold
-    similar, below, not_indexed = [], 0, 0
+    indexed, not_indexed = [], 0
     for candidate, extraction, s_skill, s_role in rows:
         similarity = combined_similarity(s_skill, s_role)
         if similarity is None:
             not_indexed += 1
-        elif similarity >= threshold:
-            p = Pending(candidate, extraction, s_skill, s_role)
-            p.similarity = similarity
-            similar.append(p)
-        else:
-            below += 1
+            continue
+        p = Pending(candidate, extraction, s_skill, s_role)
+        p.similarity = similarity
+        indexed.append(p)
+
+    levels = sorted(settings.match_similarity_levels, reverse=True) or [0.75]
+    level, similar = levels[-1], []
+    for level in levels:
+        similar = [p for p in indexed if (p.similarity or 0) >= level]
+        if similar:
+            break
     similar.sort(key=lambda p: (-(p.similarity or 0), -(_years(p.candidate) or 0)))
-    return similar[:settings.match_max_llm], len(rows), below, not_indexed
+    return similar[:settings.match_max_llm], len(rows), len(indexed) - len(similar), not_indexed, level
 
 
 # ---------- step 2: reuse stored scores ----------

@@ -68,11 +68,15 @@ async def collect(state: MatchingState, config: RunnableConfig) -> dict:
     weights = await svc.load_weights(db, state["job_id"])
     await _stage(state, PipelineStage.COLLECTING, job_category=job.category)
     vectors = await svc.job_vectors(db, job, state["user_id"])
-    pool, considered, below, not_indexed = await svc.select_candidates(db, job, vectors)
+    pool, considered, below, not_indexed, level = await svc.select_candidates(db, job, vectors)
     progress.considered, progress.pool = considered, len(pool)
-    progress.below_threshold, progress.not_indexed = below, not_indexed
+    progress.below_threshold, progress.not_indexed, progress.threshold = below, not_indexed, level
     counts = {"considered": considered, "below_threshold": below, "not_indexed": not_indexed,
-              "threshold": settings.match_similarity_threshold}
+              "threshold": level}
+    top_level = max(settings.match_similarity_levels or [level])
+    if pool and level < top_level:
+        counts["note"] = (f"No resume reached {round(top_level * 100)}% similarity, so resumes from "
+                          f"{round(level * 100)}% were scored.")
     if not pool:
         await svc.unrank_all(db, state["job_id"])
         await db.commit()
@@ -81,9 +85,10 @@ async def collect(state: MatchingState, config: RunnableConfig) -> dict:
         elif not_indexed == considered:
             note = "The resumes are still being added to search. Please try again later."
         else:
-            note = f"No resume reached {round(settings.match_similarity_threshold * 100)}% similarity."
+            note = "No resumes matched your job description skills."
+        counts["note"] = note
         await _stage(state, PipelineStage.SHORTLISTED, finished=True, pool=0, scored=0,
-                     from_cache=0, shortlisted=0, failed=0, note=note, seconds=_seconds(state), **counts)
+                     from_cache=0, shortlisted=0, failed=0, seconds=_seconds(state), **counts)
     return {"job": job, "weights": weights, "signature": svc.job_signature(job),
             "pool": pool, "matching_total": considered, "counts": counts}
 

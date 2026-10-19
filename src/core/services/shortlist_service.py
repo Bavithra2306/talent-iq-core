@@ -21,7 +21,6 @@ from src.api.rest.schemas.shortlist_schema import (
     ShortlistEntry,
     ShortlistFilters,
 )
-from src.config.settings import settings
 from src.constants.categories import normalize_category
 from src.constants.enums import Action, ActionCategory, CandidateStatus, PipelineStage
 from src.control.agents.prompts import filter_parsing
@@ -311,7 +310,7 @@ async def get_run_status(db: AsyncSession, run_id: str) -> RunStatus:
         return RunStatus(
             run_id=run_id, job_id=live.job_id, stage=live.stage, finished=False, pool=live.pool,
             considered=live.considered, below_threshold=live.below_threshold,
-            not_indexed=live.not_indexed, threshold=settings.match_similarity_threshold,
+            not_indexed=live.not_indexed, threshold=live.threshold,
             scored=live.scored, from_cache=live.from_cache, shortlisted=live.shortlisted,
             failed=live.failed, seconds=round(time.monotonic() - live.started_at, 1), events=events)
     return RunStatus(
