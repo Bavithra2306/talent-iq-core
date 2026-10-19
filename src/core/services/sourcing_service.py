@@ -19,6 +19,7 @@ from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.core.services import resume_service
 from src.core.services.audit_service import log_event
 from src.data.clients.postgres import AsyncSessionLocal
+from src.handlers.http_clients.sourcing.keywords import Resolved, resolve
 from src.handlers.http_clients.sourcing.sources import (
     github,
     huggingface,
@@ -85,16 +86,28 @@ def catalog() -> list[SourceInfo]:
     ]
 
 
-async def _collect(spec) -> SourceResult:
+async def _collect(spec, keyword: Resolved | None = None) -> SourceResult:
+    """Run one source. With a keyword, it replaces the source's own search fields."""
+    note = keyword.notes.get(spec.type) if keyword else None
     if spec.type == "github":
-        return await github.collect(spec.query, spec.max_results)
-    if spec.type == "stackexchange":
-        return await stackexchange.collect(spec.tag, spec.site, spec.max_results)
-    if spec.type == "huggingface":
-        return await huggingface.collect(spec.dataset, spec.category, spec.max_results)
-    if spec.type == "kaggle":
-        return await kaggle.collect(spec.category, spec.max_results)
-    return await url.collect([str(u) for u in spec.urls], spec.follow_links)
+        query = keyword.github_query if keyword else spec.query
+        if not query:
+            return SourceResult(errors=[note or "Enter a GitHub search or a keyword."])
+        result = await github.collect(query, spec.max_results)
+    elif spec.type == "stackexchange":
+        tag = keyword.stack_tag if keyword else spec.tag
+        if not tag:
+            return SourceResult(errors=[note or "Enter a tag or a keyword."])
+        result = await stackexchange.collect(tag, spec.site, spec.max_results)
+    elif spec.type == "huggingface":
+        result = await huggingface.collect(spec.dataset, keyword.category if keyword else spec.category,
+                                           spec.max_results)
+    elif spec.type == "kaggle":
+        result = await kaggle.collect(keyword.category if keyword else spec.category, spec.max_results)
+    else:
+        return await url.collect([str(u) for u in spec.urls], spec.follow_links)
+    result.note = note
+    return result
 
 
 async def start(user: CurrentUser, request: SourcingRunRequest) -> str:
@@ -102,7 +115,8 @@ async def start(user: CurrentUser, request: SourcingRunRequest) -> str:
     await log_event(
         user_id=user.id, category=ActionCategory.SCRAPING, stage=PipelineStage.CREATED,
         action=Action.SCRAPING_STARTED,
-        input_data={"batch_id": batch_id, "sources": [s.model_dump(mode="json") for s in request.sources]},
+        input_data={"batch_id": batch_id, "keyword": request.keyword,
+                    "sources": [s.model_dump(mode="json") for s in request.sources]},
     )
     task = asyncio.create_task(_run(batch_id, user, request))
     _background.add(task)
@@ -118,9 +132,10 @@ async def _run(batch_id: str, user: CurrentUser, request: SourcingRunRequest) ->
     try:
         await log(stage=PipelineStage.COLLECTING, output_data={"sources": len(request.sources)})
         files = []
+        keyword = resolve(request.keyword) if request.keyword else None
         for spec in request.sources:
             try:
-                found = await _collect(spec)
+                found = await _collect(spec, keyword)
             except Exception as exc:
                 logger.exception("source %s crashed", spec.type)
                 found = SourceResult(errors=[f"unexpected error: {str(exc)[:200]}"])
@@ -129,7 +144,8 @@ async def _run(batch_id: str, user: CurrentUser, request: SourcingRunRequest) ->
                       else Action.SCRAPING_PARTIALLY_COMPLETED if found.partial or found.errors
                       else Action.SCRAPING_COMPLETED)
             await log(action=action, input={"source": spec.type},
-                      output_data={"source": spec.type, "files": len(found.files), "errors": found.errors[:5]})
+                      output_data={"source": spec.type, "files": len(found.files), "errors": found.errors[:5],
+                                   **({"note": found.note} if found.note else {})})
 
         if not files:
             await log(stage=PipelineStage.FAILED, action=Action.SCRAPING_FAILED,

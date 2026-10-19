@@ -5,14 +5,16 @@ from pydantic import BaseModel, Field, HttpUrl
 
 class GitHubSource(BaseModel):
     type: Literal["github"] = "github"
-    query: str = Field(min_length=2, max_length=200,
-                       description='GitHub user search, e.g. "language:python location:chennai"')
+    query: str | None = Field(default=None, min_length=2, max_length=200,
+                              description='GitHub user search, e.g. "language:python location:chennai"; '
+                                          "ignored when the run has a keyword")
     max_results: int = Field(default=10, ge=1, le=30)
 
 
 class StackExchangeSource(BaseModel):
     type: Literal["stackexchange"] = "stackexchange"
-    tag: str = Field(min_length=1, max_length=40, description='e.g. "python", "reactjs"')
+    tag: str | None = Field(default=None, min_length=1, max_length=40,
+                            description='e.g. "python", "reactjs"; ignored when the run has a keyword')
     site: str = Field(default="stackoverflow", max_length=40)
     max_results: int = Field(default=10, ge=1, le=30)
 
@@ -43,6 +45,11 @@ SourceSpec = Annotated[
 
 
 class SourcingRunRequest(BaseModel):
+    keyword: str | None = Field(
+        default=None, min_length=2, max_length=100,
+        description='e.g. "software engineer" or "python developer". When set, it picks the search '
+                    "for GitHub, Stack Overflow, Hugging Face and Kaggle; their own fields are ignored.",
+    )
     sources: list[SourceSpec] = Field(min_length=1, max_length=10)
 
 

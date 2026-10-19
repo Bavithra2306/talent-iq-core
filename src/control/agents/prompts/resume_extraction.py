@@ -17,7 +17,7 @@ MAX_RESUME_CHARS = 7000
 SYSTEM_PROMPT_TEMPLATE = """You are an expert recruitment assistant. You receive several documents, each starting with "### Document N". For EACH document do two steps.
 
 Step 1 - classify it:
-- "resume": a CV / resume of one person. A profile summary of one person (for example generated from a public GitHub or Stack Overflow profile) also counts as a resume.
+- "resume": a CV / resume of one person. A profile summary of one person (for example generated from a public GitHub or Stack Overflow profile) also counts as a resume. Such a profile ends with a note like "Generated from the public GitHub profile ... not a resume written by the candidate": ignore that note, the document is still a "resume" (it is about one person's skills and work).
 - "jd": a job description / job posting.
 - "other": anything else.
 

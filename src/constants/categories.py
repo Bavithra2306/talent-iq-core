@@ -5,6 +5,8 @@ folds common spellings into one name so "Healthcare", "Medical" and "medical fie
 don't end up as different categories.
 """
 
+import re
+
 SUGGESTED_CATEGORIES = [
     "IT",
     "Medical",
@@ -88,3 +90,35 @@ def normalize_category(value: str | None) -> str | None:
     if cleaned.isupper() and len(cleaned) <= 4:  # acronyms like BPO, QA stay as they are
         return cleaned
     return cleaned[:60].title()
+
+
+# keyword word -> field of work. Checked in this order, so "software engineer" is IT
+# even though "engineer" alone means Engineering.
+_KEYWORD_WORDS = [
+    ("IT", {"software", "developer", "programmer", "coder", "devops", "sre", "python", "java", "javascript",
+            "typescript", "react", "angular", "node", "django", "flask", "sql", "aws", "cloud", "backend",
+            "frontend", "fullstack", "full-stack", "data", "ml", "ai", "qa", "tester", "web", "android",
+            "ios", "it", "tech", "technology", "programming", "c#", "c++", ".net", "golang"}),
+    ("Medical", {"doctor", "nurse", "nursing", "physician", "pharmacist", "pharmacy", "medical", "healthcare",
+                 "dentist", "surgeon", "clinical"}),
+    ("Finance", {"accountant", "accounting", "finance", "financial", "auditor", "banker", "banking", "tax"}),
+    ("Education", {"teacher", "teaching", "lecturer", "professor", "education", "tutor", "trainer"}),
+    ("Sales & Marketing", {"sales", "marketing", "seo", "brand", "advertising"}),
+    ("HR", {"hr", "recruiter", "recruitment", "payroll"}),
+    ("Legal", {"lawyer", "advocate", "legal", "law", "paralegal"}),
+    ("Hospitality", {"chef", "cook", "hotel", "hospitality", "waiter", "barista"}),
+    ("Design", {"designer", "design", "ux", "ui", "graphic", "illustrator", "animator"}),
+    ("Operations", {"operations", "logistics", "supply", "warehouse"}),
+    ("Engineering", {"engineer", "mechanical", "civil", "electrical", "construction", "automobile", "aviation"}),
+]
+
+
+def guess_category(keyword: str | None) -> str | None:
+    """Field of work for a search keyword such as "python developer" or "staff nurse"."""
+    if not keyword or not keyword.strip():
+        return None
+    words = set(re.findall(r"[a-z0-9#+.\-]+", keyword.lower()))
+    for category, vocabulary in _KEYWORD_WORDS:
+        if words & vocabulary:
+            return category
+    return normalize_category(keyword) if keyword.strip().lower() in _SYNONYMS else None
