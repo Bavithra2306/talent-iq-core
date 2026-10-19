@@ -39,3 +39,21 @@ class BatchStatus(BaseModel):
     embeddings_note: str | None = None
     failures: list[RejectedFile] = []
     events: list[BatchEvent]
+
+
+class ReviewFile(BaseModel):
+    """A file the AI judged "not a resume", waiting for the recruiter's decision."""
+
+    document_id: uuid.UUID
+    filename: str
+    file_type: str | None = None
+    file_size: int | None = None
+    source_site: str | None = None
+    uploaded_at: datetime
+    reason: str | None = None
+
+
+class ReviewAccepted(BaseModel):
+    candidate_id: uuid.UUID
+    name: str | None = None
+    message: str

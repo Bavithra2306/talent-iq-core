@@ -21,7 +21,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import Float, String, and_, cast, func, null, select
+from sqlalchemy import Float, String, and_, cast, null, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -63,7 +63,10 @@ _background: set[asyncio.Task] = set()
 class RunProgress:
     job_id: uuid.UUID
     stage: str = PipelineStage.CREATED.value
+    considered: int = 0
     pool: int = 0
+    below_threshold: int = 0
+    not_indexed: int = 0
     scored: int = 0
     from_cache: int = 0
     shortlisted: int = 0
@@ -86,6 +89,7 @@ class Pending:
     role: dict | None = None  # {"level", "matched_role"}
     from_cache: bool = False
     old_explanation: dict | None = None
+    similarity: float | None = None  # combined cosine similarity to the job (0..1)
 
 
 # ---------- small helpers ----------
@@ -170,7 +174,8 @@ async def start_run(
     await log_event(
         user_id=user.id, category=ActionCategory.SHORTLISTING, stage=PipelineStage.CREATED,
         job_id=job_id,
-        input_data={"run_id": run_id, "filters": request.filters.model_dump(), "top_k": request.top_k},
+        input_data={"run_id": run_id, "category": job.category,
+                    "similarity_threshold": settings.match_similarity_threshold},
     )
     task = asyncio.create_task(_run(run_id, user.id, job_id, request))
     _background.add(task)
@@ -224,31 +229,56 @@ async def job_vectors(db: AsyncSession, job: Job, user_id: uuid.UUID) -> tuple[l
     return skill, role
 
 
-async def select_pool(
-    db: AsyncSession, filters: ShortlistFilters, pool_size: int,
-    job_vectors: tuple[list[float] | None, list[float] | None],
-) -> tuple[list[Pending], int]:
+def combined_similarity(sim_skill: float | None, sim_role: float | None) -> float | None:
+    """One similarity per resume: 60% skills vector, 40% role vector (whichever exist)."""
+    if sim_skill is not None and sim_role is not None:
+        return 0.6 * float(sim_skill) + 0.4 * float(sim_role)
+    if sim_skill is not None:
+        return float(sim_skill)
+    if sim_role is not None:
+        return float(sim_role)
+    return None
+
+
+async def select_candidates(
+    db: AsyncSession, job: Job, job_vectors: tuple[list[float] | None, list[float] | None],
+) -> tuple[list[Pending], int, int, int]:
+    """Every resume in the job's category, compared with the job.
+
+    Returns (candidates with similarity >= threshold, best first; number considered;
+    number below the threshold; number without a search index yet).
+    """
     skill_vec, role_vec = job_vectors
     skill_emb, role_emb = aliased(ResumeEmbedding), aliased(ResumeEmbedding)
     sim_skill = (1 - skill_emb.vector.cosine_distance(skill_vec)) if skill_vec else cast(null(), Float)
     sim_role = (1 - role_emb.vector.cosine_distance(role_vec)) if role_vec else cast(null(), Float)
-
-    base = (
+    query = (
         select(Candidate, ResumeExtraction, sim_skill.label("sim_skill"), sim_role.label("sim_role"))
         .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
         .outerjoin(skill_emb, and_(skill_emb.resume_id == Candidate.current_resume_id,
                                    skill_emb.kind == EmbeddingKind.SKILL))
         .outerjoin(role_emb, and_(role_emb.resume_id == Candidate.current_resume_id,
                                   role_emb.kind == EmbeddingKind.ROLE))
-        .where(*_filter_clauses(filters))
     )
-    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    combined = func.coalesce(sim_skill, 0) * 0.6 + func.coalesce(sim_role, 0) * 0.4
-    rows = (await db.execute(
-        base.order_by(combined.desc(), Candidate.total_years_experience.desc().nulls_last(), Candidate.id)
-        .limit(pool_size)
-    )).all()
-    return [Pending(c, e, s, r) for c, e, s, r in rows], total
+    category = normalize_category(job.category)
+    if category:
+        query = query.where(Candidate.category == category)
+    rows = (await db.execute(query)).all()
+
+    threshold = settings.match_similarity_threshold
+    similar, below, not_indexed = [], 0, 0
+    for candidate, extraction, s_skill, s_role in rows:
+        similarity = combined_similarity(s_skill, s_role)
+        if similarity is None:
+            not_indexed += 1
+        elif similarity >= threshold:
+            p = Pending(candidate, extraction, s_skill, s_role)
+            p.similarity = similarity
+            similar.append(p)
+        else:
+            below += 1
+    similar.sort(key=lambda p: (-(p.similarity or 0), -(_years(p.candidate) or 0)))
+    return similar[:settings.match_max_llm], len(rows), below, not_indexed
 
 
 # ---------- step 2: reuse stored scores ----------
@@ -339,13 +369,52 @@ async def llm_score(job: Job, todo: list[Pending]) -> list[Pending]:
 
 # ---------- persistence and ranking ----------
 
+_ROLE_WORDS = {100: "same role", 75: "closely related role", 50: "partly related role", 0: "different role"}
+
+
+def _reason(p: Pending, exp_note: str, edu_note: str) -> list[str]:
+    """Plain-language reasons for the score, built from the scoring data (no extra AI call)."""
+    lines = []
+    if p.similarity is not None:
+        lines.append(f"{round(p.similarity * 100)}% similar to the job description")
+    required = p.required or []
+    if required:
+        strong = [i["jd_skill"] for i in required if i["level"] >= 75]
+        partly = [i["jd_skill"] for i in required if 0 < i["level"] < 75]
+        missing = [i["jd_skill"] for i in required if i["level"] == 0]
+        text = f"Required skills: {len(strong)} of {len(required)} matched"
+        if partly:
+            text += f"; partly: {', '.join(partly)}"
+        if missing:
+            text += f"; missing: {', '.join(missing)}"
+        lines.append(text)
+    nice = p.nice or []
+    if nice:
+        have = [i["jd_skill"] for i in nice if i["level"] >= 75]
+        lines.append(f"Nice-to-have: {len(have)} of {len(nice)}" + (f" ({', '.join(have)})" if have else ""))
+    if p.role:
+        level = int(p.role.get("level") or 0)
+        words = _ROLE_WORDS.get(level, f"role match {level}/100")
+        matched = p.role.get("matched_role")
+        lines.append(f"Role: {words}" + (f" ({matched})" if matched and level else ""))
+    if exp_note:
+        lines.append(f"Experience: {exp_note}")
+    if edu_note:
+        lines.append(f"Education: {edu_note}")
+    return lines
+
+
 def _explanation_dict(job: Job, p: Pending, signature: str) -> dict:
     exp_score, exp_note = scoring_rules.experience_score(_years(p.candidate), job.experience_years)
     edu_score, edu_note = scoring_rules.education_score(p.extraction.education, job.education)
     old = p.old_explanation or {}
     same_job = old.get("job_signature") == signature
+    if p.similarity is None:
+        p.similarity = combined_similarity(p.sim_skill, p.sim_role)
     return {
         "job_signature": signature,
+        "similarity": None if p.similarity is None else round(p.similarity, 4),
+        "reason": _reason(p, exp_note, edu_note),
         "cosine": {"skills": None if p.sim_skill is None else round(float(p.sim_skill), 4),
                    "role": None if p.sim_role is None else round(float(p.sim_role), 4)},
         "skills": {"required": p.required, "nice": p.nice,
@@ -363,7 +432,9 @@ def _explanation_dict(job: Job, p: Pending, signature: str) -> dict:
 
 
 async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[Pending],
-                   weights: Weights, signature: str, top_k: int, pool_ids: set[uuid.UUID]) -> None:
+                   weights: Weights, signature: str) -> None:
+    """Save scores and rank this run's candidates. Nobody is shortlisted here: the recruiter
+    picks the top K (with filters) afterwards. Statuses already set are left alone."""
     existing = {
         r.candidate_id: r for r in (await db.execute(
             select(MatchingShortlisting).where(MatchingShortlisting.job_id == job.id)
@@ -398,11 +469,9 @@ async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[P
     in_run = {id(e[3]) for e in entries}
     for rank, (_, _, _, row) in enumerate(entries, start=1):
         row.rank = rank
-        _set_shortlist_status(row, rank <= top_k)
     for row in existing.values():
         if id(row) not in in_run:
             row.rank = None
-            _set_shortlist_status(row, False)
     await db.flush()
 
 
@@ -417,7 +486,6 @@ async def unrank_all(db: AsyncSession, job_id: uuid.UUID) -> None:
     rows = (await db.execute(select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id))).scalars()
     for row in rows:
         row.rank = None
-        _set_shortlist_status(row, False)
 
 
 async def top_rows(db: AsyncSession, job_id: uuid.UUID, top_k: int) -> list[MatchingShortlisting]:

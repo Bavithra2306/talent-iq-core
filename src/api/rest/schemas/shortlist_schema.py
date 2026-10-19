@@ -9,7 +9,7 @@ from src.constants.enums import CandidateStatus
 
 
 class ShortlistFilters(BaseModel):
-    """Hard filters that decide which candidates are considered."""
+    """Filters on the matched candidates (applied after matching, before picking the top K)."""
 
     category: str | None = Field(default=None, description="e.g. IT, Medical")
     location: str | None = None
@@ -20,8 +20,23 @@ class ShortlistFilters(BaseModel):
 
 
 class ShortlistRunRequest(BaseModel):
+    """Kept for compatibility: matching now always uses every resume in the job's category."""
+
     filters: ShortlistFilters = Field(default_factory=ShortlistFilters)
     top_k: int = Field(default=10, ge=1, le=100)
+
+
+class TopKRequest(BaseModel):
+    """Shortlist the best K of the matched candidates that pass these filters."""
+
+    top_k: int = Field(ge=1, le=100)
+    filters: ShortlistFilters = Field(default_factory=ShortlistFilters)
+    min_score: float | None = Field(default=None, ge=0, le=100)
+
+
+class TopKResult(BaseModel):
+    shortlisted: int
+    matching: int
 
 
 class RunAccepted(BaseModel):
@@ -87,7 +102,12 @@ class RunStatus(BaseModel):
     job_id: uuid.UUID | None = None
     stage: str
     finished: bool
-    pool: int | None = None
+    considered: int | None = None  # resumes in the job's category
+    pool: int | None = None  # of those, similarity >= threshold (sent to the LLM)
+    below_threshold: int | None = None
+    not_indexed: int | None = None  # no search index yet (embedding quota)
+    threshold: float | None = None
+    note: str | None = None
     scored: int | None = None
     from_cache: int | None = None
     shortlisted: int | None = None

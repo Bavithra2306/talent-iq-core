@@ -88,6 +88,10 @@ class Settings(BaseSettings):
 
     # Matching / shortlisting
     score_batch_size: int = 8  # candidates per LLM scoring request
+    # Matching: every resume in the job's category is compared with the job; only those with
+    # cosine similarity from this value up to 1.0 go to the LLM for scoring.
+    match_similarity_threshold: float = 0.75
+    match_max_llm: int = 150  # safety cap on LLM-scored candidates per run
     explain_batch_size: int = 5  # candidates per LLM explanation request
     pool_multiplier: int = 3  # candidates sent to the LLM = top_k x this ...
     pool_min: int = 30  # ... but at least this many

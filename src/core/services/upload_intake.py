@@ -23,7 +23,7 @@ from fastapi import UploadFile
 from src.config.settings import settings
 from src.core.exceptions import BadRequestError, FileTooLargeError
 from src.core.services.resume_service import UploadedFile
-from src.utils.file_types import LABELS, Kind, detect_kind, detect_kind_of_stream
+from src.utils.file_types import Kind, detect_kind, detect_kind_of_stream, format_label
 
 logger = logging.getLogger("talentiq.upload")
 
@@ -39,14 +39,12 @@ class Intake:
 
 
 def _too_big_reason() -> str:
-    return f"Larger than {settings.max_upload_bytes // _MB} MB."
+    return f"Larger than {settings.max_upload_bytes // _MB} MB"
 
 
-def _wrong_type_reason(kind: Kind, *, nested_zip: bool = False) -> str:
-    if nested_zip:
-        return "Zip files inside a zip are not accepted."
-    seen = "" if kind is Kind.UNKNOWN else f" (this is {LABELS[kind]})"
-    return f"Only PDF and DOCX files are accepted{seen}."
+def _wrong_type_reason(kind: Kind, filename: str, *, nested_zip: bool = False) -> str:
+    """Only PDF and DOCX are accepted, so the reason is simply the file's format."""
+    return "Zip inside the zip" if nested_zip else format_label(kind, filename)
 
 
 def _is_junk(path: str) -> bool:
@@ -91,11 +89,11 @@ def expand_zip(file: IO[bytes]) -> Intake:
         for info in entries:
             name = PurePosixPath(info.filename.replace("\\", "/")).name
             if _is_unsafe(info.filename):
-                out.rejected.append({"filename": name, "reason": "The file path inside the zip is not safe."})
+                out.rejected.append({"filename": name, "reason": "Unsafe file path"})
             elif info.flag_bits & 0x1:
-                out.rejected.append({"filename": name, "reason": "The file is password protected."})
+                out.rejected.append({"filename": name, "reason": "Password protected"})
             elif info.file_size == 0:
-                out.rejected.append({"filename": name, "reason": "The file is empty."})
+                out.rejected.append({"filename": name, "reason": "Empty file"})
             elif info.file_size > settings.max_upload_bytes:
                 out.rejected.append({"filename": name, "reason": _too_big_reason()})
             else:
@@ -104,14 +102,14 @@ def expand_zip(file: IO[bytes]) -> Intake:
                         data = handle.read(settings.max_upload_bytes + 1)
                 except Exception:
                     logger.warning("could not read %s from zip", info.filename, exc_info=True)
-                    out.rejected.append({"filename": name, "reason": "The file could not be read from the zip."})
+                    out.rejected.append({"filename": name, "reason": "Could not be read"})
                     continue
                 kind = detect_kind(data)
                 if kind in _ACCEPTED:
                     out.uploads.append(UploadedFile(filename=name, data=data))
                 else:
                     out.rejected.append({"filename": name,
-                                         "reason": _wrong_type_reason(kind, nested_zip=kind is Kind.ZIP)})
+                                         "reason": _wrong_type_reason(kind, name, nested_zip=kind is Kind.ZIP)})
     return out
 
 
@@ -140,11 +138,11 @@ async def collect(files: list[UploadFile]) -> Intake:
     for upload, kind in zip(files, kinds, strict=True):
         name = upload.filename or "resume"
         if not upload.size:
-            out.rejected.append({"filename": name, "reason": "The file is empty."})
+            out.rejected.append({"filename": name, "reason": "Empty file"})
         elif upload.size > settings.max_upload_bytes:
             out.rejected.append({"filename": name, "reason": _too_big_reason()})
         elif kind not in _ACCEPTED:
-            out.rejected.append({"filename": name, "reason": _wrong_type_reason(kind)})
+            out.rejected.append({"filename": name, "reason": _wrong_type_reason(kind, name)})
         else:
             out.uploads.append(UploadedFile(filename=name, data=await upload.read()))
     return out

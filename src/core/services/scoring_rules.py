@@ -106,6 +106,19 @@ def education_level(text: str | None) -> int:
     return level
 
 
+_LEVEL_NAMES = {1: "a diploma", 2: "a bachelor's degree", 3: "a master's degree", 4: "a doctorate"}
+
+
+def required_education_level(text: str | None) -> int:
+    """Level a job asks for. Alternatives ("B.E./B.Tech or MCA") mean any of them is
+    enough, so the lowest level named counts."""
+    if not text:
+        return 0
+    parts = re.split(r"\bor\b|/|,|;|\|", text, flags=re.IGNORECASE)
+    levels = [lvl for lvl in (education_level(part) for part in parts) if lvl > 0]
+    return min(levels) if levels else education_level(text)
+
+
 def _field_words(text: str | None) -> set[str]:
     return {
         w for w in re.findall(r"[a-z]{4,}", (text or "").lower()) if w not in _GENERIC
@@ -125,7 +138,7 @@ def education_score(candidate_education: list[dict] | None, required: str | None
     degree_text = " ; ".join(degrees)
     candidate_level = max((education_level(d.get("degree")) for d in (candidate_education or [])
                            if isinstance(d, dict)), default=0)
-    required_level = education_level(required)
+    required_level = required_education_level(required)
 
     if not degrees:
         return 0.0, "No education details found on the resume."
@@ -141,7 +154,11 @@ def education_score(candidate_education: list[dict] | None, required: str | None
     else:
         score = 0.0
 
-    note = f"Highest degree level {candidate_level} vs required {required_level} ({degree_text})."
+    have, need = _LEVEL_NAMES[candidate_level], _LEVEL_NAMES[required_level]
+    if score == 100:
+        note = f"Has {have}, which meets the requirement of {need} ({degree_text})."
+    else:
+        note = f"Has {have}, below the requirement of {need} ({degree_text})."
     wanted = _field_words(required)
     if score > 75 and wanted and not (wanted & _field_words(degree_text)):
         score = 75.0

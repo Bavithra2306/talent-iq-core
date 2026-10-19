@@ -13,6 +13,8 @@ from src.api.rest.schemas.shortlist_schema import (
     RunStatus,
     ShortlistListResponse,
     ShortlistRunRequest,
+    TopKRequest,
+    TopKResult,
 )
 from src.constants.enums import CandidateStatus, PipelineStage
 from src.core.services import matching_service, shortlist_service
@@ -50,14 +52,34 @@ async def parse_filter(body: ParseFilterRequest, _: CurrentUser = Depends(recrui
     return await shortlist_service.parse_filter(body.text)
 
 
-@ShortlistRouter.post("/jobs/{job_id}/match", response_model=RunAccepted,
-                      status_code=status.HTTP_202_ACCEPTED)
+@ShortlistRouter.post(
+    "/jobs/{job_id}/match", response_model=RunAccepted, status_code=status.HTTP_202_ACCEPTED,
+    summary="Start matching",
+    description="Matches every resume in the job's category: experience and education by code, "
+                "then cosine similarity; resumes from 0.75 to 1.0 similarity are scored by the LLM. "
+                "Nobody is shortlisted automatically. Poll /shortlists/runs/{run_id}.",
+)
 async def run_shortlist(
-    job_id: uuid.UUID, body: ShortlistRunRequest,
+    job_id: uuid.UUID, body: ShortlistRunRequest | None = None,
     db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(recruiter_only),
 ):
-    """Match the job against the candidate pool (filters + top_k). Poll /shortlists/runs/{run_id}."""
-    return RunAccepted(run_id=await matching_service.start_run(db, user, job_id, body))
+    return RunAccepted(run_id=await matching_service.start_run(
+        db, user, job_id, body or ShortlistRunRequest()))
+
+
+@ShortlistRouter.post(
+    "/jobs/{job_id}/shortlist/top-k", response_model=TopKResult,
+    summary="Shortlist the top K",
+    description="Shortlists the K best matched candidates that pass the filters "
+                "(people already shared or reviewed are not changed).",
+)
+async def shortlist_top_k(
+    job_id: uuid.UUID, body: TopKRequest,
+    db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(recruiter_only),
+):
+    shortlisted, matching = await shortlist_service.shortlist_top_k(
+        db, user, job_id, body.top_k, body.filters, body.min_score)
+    return TopKResult(shortlisted=shortlisted, matching=matching)
 
 
 @ShortlistRouter.get("/shortlists/runs/{run_id}", response_model=RunStatus)
@@ -72,6 +94,8 @@ def _list_params(
     min_score: float | None = Query(default=None, ge=0, le=100),
     max_score: float | None = Query(default=None, ge=0, le=100),
     skill: str | None = None, location: str | None = None, category: str | None = None,
+    skills: list[str] = Query(default=[], description="all of these skills (repeat the parameter)"),
+    education: str | None = Query(default=None, description="text in the degree, e.g. B.Tech"),
     min_experience: float | None = Query(default=None, ge=0),
     max_experience: float | None = Query(default=None, ge=0),
     search: str | None = Query(default=None, description="name, email or title"),
@@ -87,6 +111,7 @@ def _list_params(
         status_filter=status_filter, min_score=min_score, max_score=max_score, skill=skill,
         location=location, category=category, min_experience=min_experience,
         max_experience=max_experience, search=search, include_unranked=include_unranked,
+        skills=skills, education=education,
         preview_weights=_preview_weights(skill_pct, role_pct, exp_pct, edu_pct),
         sort=sort, descending=(order == "desc"), limit=limit, offset=offset,
     )

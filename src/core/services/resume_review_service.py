@@ -1,0 +1,117 @@
+"""Files the AI judged "not a resume", kept for the recruiter to check.
+
+The recruiter opens the file and either confirms it is a resume (it is then read
+and saved like any other resume) or deletes it. These files are documents with
+``document_type = "review"``; no extra table is needed.
+"""
+
+import logging
+import uuid
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.api.rest.dependencies import CurrentUser
+from src.api.rest.schemas.ingestion_schema import ReviewAccepted, ReviewFile
+from src.constants.enums import Action, ActionCategory
+from src.core.exceptions import NotFoundError, ServiceUnavailableError, UnprocessableError
+from src.core.services import resume_service
+from src.core.services.audit_service import log_event
+from src.core.services.document_parser import parser
+from src.data.clients.storage import storage
+from src.data.models.postgres.audit_log import AuditLog
+from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.document import Document
+from src.handlers.http_clients.llm_client import LLMError
+
+logger = logging.getLogger("talentiq.resumes")
+
+# Tells the AI the recruiter has looked at the file, so it extracts the fields anyway.
+_CONFIRMED = "NOTE: A recruiter has checked this file and confirmed it is a resume.\n\n"
+
+
+async def _get(db: AsyncSession, document_id: uuid.UUID) -> Document:
+    document = await db.get(Document, document_id)
+    if document is None or document.document_type != resume_service.DOC_TYPE_REVIEW:
+        raise NotFoundError("This file is not waiting for review.")
+    return document
+
+
+async def _reason(db: AsyncSession, document_id: uuid.UUID) -> str | None:
+    row = (await db.execute(
+        select(AuditLog.output_data)
+        .where(AuditLog.actions == Action.EXTRACTION_FAILED,
+               AuditLog.input_data.like(f'%"document_id": "{document_id}"%'))
+        .order_by(AuditLog.created_at.desc()).limit(1)
+    )).scalar_one_or_none()
+    return row
+
+
+async def list_files(db: AsyncSession) -> list[ReviewFile]:
+    documents = (await db.execute(
+        select(Document).where(Document.document_type == resume_service.DOC_TYPE_REVIEW)
+        .order_by(Document.created_at.desc())
+    )).scalars().all()
+    return [
+        ReviewFile(
+            document_id=d.id, filename=d.original_filename or "file",
+            file_type=d.file_type.value if d.file_type else None, file_size=d.file_size,
+            source_site=d.source_site, uploaded_at=d.created_at, reason=await _reason(db, d.id),
+        )
+        for d in documents
+    ]
+
+
+async def get_file(db: AsyncSession, document_id: uuid.UUID) -> tuple[Document, bytes]:
+    document = await _get(db, document_id)
+    return document, storage.read(document.file_path)
+
+
+async def accept_as_resume(db: AsyncSession, user: CurrentUser, document_id: uuid.UUID) -> ReviewAccepted:
+    """The recruiter says it is a resume: read it, extract the fields and save the candidate."""
+    document = await _get(db, document_id)
+    data = storage.read(document.file_path)
+    parsed = await parser.parse(data, document.original_filename or "resume")
+    if not parsed.text.strip():
+        raise UnprocessableError("No text could be read from this file.")
+    try:
+        results, model = await resume_service._extract_group([_CONFIRMED + parsed.text])
+    except LLMError as exc:
+        raise ServiceUnavailableError("The AI service is busy. Please try again in a minute.") from exc
+    result = results.get(1)
+    if result is None:
+        raise ServiceUnavailableError("The AI service could not read this file. Please try again.")
+
+    item = resume_service.BatchItem(document.id, document.original_filename or "resume", document.file_path)
+    document.document_type = resume_service.DOC_TYPE_RESUME
+    await resume_service._save_resume(db, user.id, item, parsed, result, model)
+    await db.commit()
+    candidate = (await db.execute(
+        select(Candidate).where(Candidate.current_resume_id == document.id)
+    )).scalar_one()
+    await log_event(
+        user_id=user.id, category=ActionCategory.EXTRACTION, action=Action.EXTRACTION_COMPLETED,
+        input_data={"document_id": str(document.id), "filename": document.original_filename,
+                    "reviewed_by_recruiter": True},
+        output_data={"candidate_id": str(candidate.id), "name": candidate.name},
+    )
+    # Its search index is filled in by the background embedding loop.
+    return ReviewAccepted(candidate_id=candidate.id, name=candidate.name,
+                          message=f"Saved as a resume{f' for {candidate.name}' if candidate.name else ''}.")
+
+
+async def delete_file(db: AsyncSession, user: CurrentUser, document_id: uuid.UUID) -> None:
+    """The recruiter confirms it is not a resume: remove the record and the stored file."""
+    document = await _get(db, document_id)
+    key, name = document.file_path, document.original_filename
+    await db.delete(document)
+    await db.commit()
+    try:
+        storage.delete(key)
+    except Exception:
+        logger.exception("could not delete stored file %s", key)
+    await log_event(
+        user_id=user.id, category=ActionCategory.EXTRACTION, action=Action.EXTRACTION_FAILED,
+        input_data={"document_id": str(document_id), "filename": name},
+        output_data="Deleted by the recruiter after review: not a resume.",
+    )

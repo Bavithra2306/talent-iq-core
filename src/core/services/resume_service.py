@@ -45,12 +45,14 @@ from src.data.models.postgres.resume_extraction import ResumeExtraction
 from src.handlers.http_clients import embedding_client
 from src.handlers.http_clients.embedding_client import EmbeddingError, EmbeddingQuotaExceeded
 from src.handlers.http_clients.llm_client import LLMError, llm
-from src.utils.file_types import LABELS, detect_kind
+from src.utils.file_types import detect_kind, format_label
 
 logger = logging.getLogger("talentiq.resumes")
 
 RESUME_FOLDER = "resumes"
 DOC_TYPE_RESUME = "resume"
+# The AI said "not a resume": kept for the recruiter to check (accept or delete).
+DOC_TYPE_REVIEW = "review"
 
 # Keep references so background tasks aren't garbage collected mid-run.
 _background: set[asyncio.Task] = set()
@@ -142,18 +144,18 @@ async def accept_uploads(
     for upload in files:
         name = upload.filename or "resume"
         if not upload.data:
-            rejected.append({"filename": name, "reason": "The file is empty."})
+            rejected.append({"filename": name, "reason": "Empty file"})
         elif len(upload.data) > settings.max_upload_bytes:
             rejected.append({
                 "filename": name,
-                "reason": f"Larger than {settings.max_upload_bytes // (1024 * 1024)} MB.",
+                "reason": f"Larger than {settings.max_upload_bytes // (1024 * 1024)} MB",
             })
         elif (file_type := detect_file_type(upload.data)) is None:
-            rejected.append({"filename": name, "reason": _unsupported_reason(upload.data)})
+            rejected.append({"filename": name, "reason": format_label(detect_kind(upload.data), name)})
         else:
             digest = hashlib.sha256(upload.data).hexdigest()
             if digest in seen_hashes:
-                rejected.append({"filename": name, "reason": "Duplicate of another file in this upload."})
+                rejected.append({"filename": name, "reason": "Duplicate (same file twice)"})
             else:
                 seen_hashes.add(digest)
                 candidates.append((upload, file_type, digest))
@@ -178,10 +180,12 @@ async def accept_uploads(
         name = upload.filename or "resume"
         document = existing.get(digest)
         if document is not None:
-            if document.document_type != DOC_TYPE_RESUME:
-                rejected.append({"filename": name, "reason": "This file was uploaded as a JD."})
+            if document.document_type == DOC_TYPE_REVIEW:
+                rejected.append({"filename": name, "reason": "Already uploaded, waiting for your review"})
+            elif document.document_type != DOC_TYPE_RESUME:
+                rejected.append({"filename": name, "reason": "Already uploaded as a job description"})
             elif document.id in extracted_ids:
-                rejected.append({"filename": name, "reason": "Already uploaded and processed."})
+                rejected.append({"filename": name, "reason": "Already uploaded"})
             else:  # earlier attempt failed part-way: process it again
                 items.append(BatchItem(document.id, name, document.file_path))
             continue
@@ -225,12 +229,6 @@ async def accept_uploads(
     )
 
 
-def _unsupported_reason(data: bytes) -> str:
-    kind = detect_kind(data)
-    seen = "" if kind.value == "unknown" else f" (this is {LABELS[kind]})"
-    return f"Only PDF and DOCX files are accepted{seen}."
-
-
 # ---------- background pipeline ----------
 
 async def log_stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, state: BatchProgress,
@@ -243,7 +241,7 @@ async def log_stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, sta
 
 
 async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: BatchItem,
-                reason: str, *, delete_file: bool = False) -> None:
+                reason: str, *, needs_review: bool = False) -> None:
     state.failed += 1
     state.failures.append({"filename": item.filename, "reason": reason})
     await log_event(
@@ -251,17 +249,16 @@ async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, ite
         input_data=_batch_input(batch_id, document_id=str(item.document_id), filename=item.filename),
         output_data=reason,
     )
-    if delete_file:
-        # Not a resume: don't keep it around.
+    if needs_review:
+        # The AI thinks it is not a resume: keep the file for the recruiter to check.
         try:
             async with AsyncSessionLocal() as db:
                 document = await db.get(Document, item.document_id)
                 if document is not None:
-                    await db.delete(document)
+                    document.document_type = DOC_TYPE_REVIEW
                     await db.commit()
-            storage.delete(item.storage_key)
         except Exception:
-            logger.exception("could not remove rejected file %s", item.filename)
+            logger.exception("could not mark %s for review", item.filename)
 
 
 async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) -> None:
@@ -327,9 +324,10 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
         for position, (result, model) in sorted(extracted.items()):
             item, parsed = group[position - 1]
             if result.document_type != "resume":
+                looks_like = "a job description" if result.document_type == "jd" else "something else"
                 await fail_item(batch_id, user_id, state, item,
-                            f"This file doesn't look like a resume (it looks like: {result.document_type}).",
-                            delete_file=True)
+                                f"Not a resume (looks like {looks_like}). Waiting for your review.",
+                                needs_review=True)
             else:
                 valid.append((item, parsed, result, model))
         if not valid:

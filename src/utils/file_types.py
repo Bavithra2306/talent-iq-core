@@ -88,6 +88,29 @@ def detect_kind_of_stream(file: IO[bytes]) -> Kind:
     return detect_kind(head)
 
 
+_FORMAT_LABELS = {
+    Kind.PDF: "PDF file",
+    Kind.DOCX: "Word file",
+    Kind.JPEG: "JPG image",
+    Kind.PNG: "PNG image",
+    Kind.ZIP: "Zip file",
+    Kind.XLSX: "Excel file",
+    Kind.PPTX: "PowerPoint file",
+    Kind.DAMAGED: "Damaged file",
+}
+
+
+def format_label(kind: Kind, filename: str = "") -> str:
+    """Short label of a file's format for the user. The name is only used to describe
+    content we don't recognise (e.g. "TXT file"); it never decides what is accepted."""
+    if kind in _FORMAT_LABELS:
+        return _FORMAT_LABELS[kind]
+    extension = filename.rsplit(".", 1)[-1] if "." in filename else ""
+    if extension and extension.isalnum() and len(extension) <= 5:
+        return f"{extension.upper()} file"
+    return "Unknown format"
+
+
 def media_type(data: bytes) -> str:
     """Content-Type for sending a stored file back to the browser."""
     return MEDIA_TYPES.get(detect_kind(data), "application/octet-stream")

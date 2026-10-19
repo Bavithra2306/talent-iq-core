@@ -9,8 +9,18 @@ from src.api.rest.schemas.candidate_schema import (
     CandidateListResponse,
     CategoryCount,
 )
-from src.api.rest.schemas.ingestion_schema import BatchStatus, UploadResponse
-from src.core.services import candidate_service, resume_service, upload_intake
+from src.api.rest.schemas.ingestion_schema import (
+    BatchStatus,
+    ReviewAccepted,
+    ReviewFile,
+    UploadResponse,
+)
+from src.core.services import (
+    candidate_service,
+    resume_review_service,
+    resume_service,
+    upload_intake,
+)
 from src.core.services.candidate_service import SortField
 from src.data.clients.postgres import get_db
 from src.utils.file_types import media_type
@@ -112,3 +122,42 @@ async def download_resume(
         content=content, media_type=media_type(content),
         headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
+
+
+# ---------- files the AI judged "not a resume" ----------
+
+@ResumeRouter.get(
+    "/resumes/review", response_model=list[ReviewFile],
+    summary="Files waiting for review",
+    description='Uploaded or sourced files the AI judged "not a resume". The recruiter decides.',
+)
+async def review_files(db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(recruiter_only)):
+    return await resume_review_service.list_files(db)
+
+
+@ResumeRouter.get("/resumes/review/{document_id}/file", summary="Open a file waiting for review")
+async def review_file(document_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+                      _: CurrentUser = Depends(recruiter_only)):
+    document, content = await resume_review_service.get_file(db, document_id)
+    filename = (document.original_filename or "file").replace('"', "")
+    return Response(content=content, media_type=media_type(content),
+                    headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+@ResumeRouter.post(
+    "/resumes/review/{document_id}/accept", response_model=ReviewAccepted,
+    summary="It is a resume", description="Reads the file as a resume and saves the candidate.",
+)
+async def accept_review_file(document_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+                             user: CurrentUser = Depends(recruiter_only)):
+    return await resume_review_service.accept_as_resume(db, user, document_id)
+
+
+@ResumeRouter.delete(
+    "/resumes/review/{document_id}", status_code=status.HTTP_204_NO_CONTENT,
+    summary="Not a resume: delete it", description="Removes the file and its record.",
+)
+async def delete_review_file(document_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+                             user: CurrentUser = Depends(recruiter_only)):
+    await resume_review_service.delete_file(db, user, document_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
