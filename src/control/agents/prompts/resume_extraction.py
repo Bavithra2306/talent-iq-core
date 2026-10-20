@@ -1,4 +1,5 @@
-"""Prompt for LLM steps 1+2 on resumes: classify each document and extract its fields.
+"""Prompt for AI step 2: extract the fields of documents already known to be resumes
+(step 1, resume_check, decided that; or the recruiter confirmed it).
 
 Several resumes go into one request (to stay inside free-tier requests-per-minute
 limits); results come back in a list matched by `index`.
@@ -14,14 +15,7 @@ from src.constants.categories import SUGGESTED_CATEGORIES
 # Resume text beyond this is cut (a resume rarely needs more; keeps requests small).
 MAX_RESUME_CHARS = 7000
 
-SYSTEM_PROMPT_TEMPLATE = """You are an expert recruitment assistant. You receive several documents, each starting with "### Document N". For EACH document do two steps.
-
-Step 1 - classify it:
-- "resume": a CV / resume of one person. A profile summary of one person (for example generated from a public GitHub or Stack Overflow profile) also counts as a resume. Such a profile ends with a note like "Generated from the public GitHub profile ... not a resume written by the candidate": ignore that note, the document is still a "resume" (it is about one person's skills and work).
-- "jd": a job description / job posting.
-- "other": anything else.
-
-Step 2 - if it is a "resume", extract (otherwise leave the other fields null / empty):
+SYSTEM_PROMPT_TEMPLATE = """You are an expert recruitment assistant. You receive several resumes, each starting with "### Document N". A profile made from a public GitHub or Stack Overflow page counts as a resume; ignore a closing note saying it was generated from a public profile. For EACH document extract:
 - name: the person's full name. Many resumes are anonymised: if no personal name is written, use null. Never use a job title, company or heading as the name.
 - email: lower-case email address, null if absent.
 - phone: phone number as written, null if absent.
@@ -37,7 +31,7 @@ Rules:
 - Use only information in the document. Never invent values; use null or [] when something is missing.
 - Keep the documents separate; never mix details between them.
 - Respond with ONLY this JSON, one item per document, in the same order:
-{{"results": [{{"index": N, "document_type": "resume" | "jd" | "other", "name": ..., "email": ..., "phone": ..., "location": ..., "category": ..., "current_title": ..., "total_experience_years": ..., "skills": [...], "roles": [...], "education": [...]}}]}}"""
+{{"results": [{{"index": N, "name": ..., "email": ..., "phone": ..., "location": ..., "category": ..., "current_title": ..., "total_experience_years": ..., "skills": [...], "roles": [...], "education": [...]}}]}}"""
 
 
 def system_prompt() -> str:

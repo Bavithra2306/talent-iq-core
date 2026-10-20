@@ -1,12 +1,15 @@
 """Resume ingestion graph.
 
-    collect -> read_files -> (no readable files? finish) -> extract_save -> finish
+    collect -> read_files -> (no readable files? finish) -> check -> (no resumes? finish)
+            -> extract_save -> finish
 
 * collect: marks the batch as started (stage ``collecting``).
 * read_files: parses every file in parallel (pypdf / Docling); unreadable files are
   marked failed and the rest continue.
-* extract_save: LLM extraction in groups, then saves candidates; not-a-resume files
-  and LLM failures are marked failed per file.
+* check: AI step 1, "is it a resume?", for many files per request using the start of
+  each file. Anything else waits for the recruiter's review (nothing is deleted).
+* extract_save: AI step 2, extraction in groups, then saves candidates; LLM failures
+  are marked failed per file.
 * finish: writes the final stage (finished / partly completed / failed).
 
 Embeddings are filled in afterwards by a background task (see resume_service).
@@ -71,6 +74,27 @@ async def read_files(state: IngestionState) -> dict:
 
 
 def after_read(state: IngestionState) -> str:
+    return "check" if state.get("readable") else "finish"
+
+
+async def check(state: IngestionState) -> dict:
+    batch_id, user_id = state["batch_id"], state["user_id"]
+    progress = svc.progress[batch_id]
+    readable = state["readable"]
+    answers = await svc.check_documents([parsed.text for _, parsed in readable])
+    resumes = []
+    for (item, parsed), kind in zip(readable, answers, strict=True):
+        if kind in ("resume", None):
+            resumes.append((item, parsed))
+        else:
+            looks_like = "a job description" if kind == "jd" else "something else"
+            await svc.fail_item(batch_id, user_id, progress, item,
+                                f"Not a resume (looks like {looks_like}). Waiting for your review.",
+                                needs_review=True)
+    return {"readable": resumes}
+
+
+def after_check(state: IngestionState) -> str:
     return "extract_save" if state.get("readable") else "finish"
 
 
@@ -89,13 +113,15 @@ async def finish(state: IngestionState) -> dict:
     progress = svc.progress[batch_id]
     summary = {
         "finished": True, "total": progress.total, "saved": progress.saved,
-        "failed": progress.failed, "embeddings_pending": await svc.count_missing_embeddings(),
+        "failed": progress.failed, "needs_review": progress.needs_review, "embeddings_pending": await svc.count_missing_embeddings(),
         "seconds": round(time.monotonic() - progress.started_at, 1),
     }
-    if progress.failed == 0:
+    # Files waiting for the recruiter's review are not failures.
+    real_failures = progress.failed - progress.needs_review
+    if real_failures == 0:
         await svc.log_stage(batch_id, user_id, PipelineStage.READING, progress,
                             action=Action.EXTRACTION_COMPLETED, **summary)
-    elif progress.saved > 0:
+    elif progress.saved > 0 or progress.needs_review > 0:
         await svc.log_stage(batch_id, user_id, PipelineStage.PARTLY_COMPLETED, progress, **summary)
     else:
         await svc.log_stage(batch_id, user_id, PipelineStage.FAILED, progress, **summary)
@@ -106,11 +132,13 @@ def build_ingestion_graph():
     graph = StateGraph(IngestionState)
     graph.add_node("collect", collect)
     graph.add_node("read_files", read_files)
+    graph.add_node("check", check)
     graph.add_node("extract_save", extract_save)
     graph.add_node("finish", finish)
     graph.add_edge(START, "collect")
     graph.add_edge("collect", "read_files")
-    graph.add_conditional_edges("read_files", after_read,
+    graph.add_conditional_edges("read_files", after_read, {"check": "check", "finish": "finish"})
+    graph.add_conditional_edges("check", after_check,
                                 {"extract_save": "extract_save", "finish": "finish"})
     graph.add_edge("extract_save", "finish")
     graph.add_edge("finish", END)

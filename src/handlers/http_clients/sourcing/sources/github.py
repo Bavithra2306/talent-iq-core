@@ -50,6 +50,8 @@ def _resume_links(readme: str, blog: str | None) -> list[str]:
 
 async def collect(query: str, max_results: int) -> SourceResult:
     result = SourceResult()
+    if "type:" not in query:
+        query = f"{query} type:user"  # people only, never company / organisation accounts
     try:
         search, remaining = await _api(f"/search/users?q={urllib.parse.quote(query)}&per_page={max_results}")
     except FetchError as exc:

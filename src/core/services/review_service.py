@@ -13,6 +13,7 @@ Every action is written to audit_logs, which is also the review history.
 
 import json
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +43,26 @@ DECIDED = (CandidateStatus.APPROVED, CandidateStatus.REJECTED, CandidateStatus.I
 
 
 # ---------- helpers ----------
+
+async def _scheduled_at(db: AsyncSession, entry_ids: list[uuid.UUID]) -> dict[str, datetime]:
+    """When each entry's interview was scheduled (kept in the audit log; status stays approved)."""
+    if not entry_ids:
+        return {}
+    rows = (await db.execute(
+        select(AuditLog.input_data, AuditLog.created_at)
+        .where(AuditLog.actions == Action.INTERVIEW_SCHEDULED)
+        .order_by(AuditLog.created_at)
+    )).all()
+    wanted = {str(i) for i in entry_ids}
+    found: dict[str, datetime] = {}
+    for data, at in rows:
+        try:
+            entry_id = json.loads(data or "{}").get("entry_id")
+        except ValueError:
+            continue
+        if entry_id in wanted:
+            found[entry_id] = at
+    return found
 
 async def _row(db: AsyncSession, entry_id: uuid.UUID) -> MatchingShortlisting:
     row = await db.get(MatchingShortlisting, entry_id)
@@ -160,7 +181,14 @@ async def list_shared(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID | N
         query = query.where(MatchingShortlisting.job_id == job_id)
     if status_filter:
         query = query.where(MatchingShortlisting.status == status_filter)
-    return [await to_entry(db, row) for row in (await db.execute(query)).scalars()]
+    rows = list((await db.execute(query)).scalars())
+    scheduled = await _scheduled_at(db, [r.id for r in rows])
+    entries = []
+    for row in rows:
+        entry = await to_entry(db, row)
+        entry.interview_scheduled_at = scheduled.get(str(row.id))
+        entries.append(entry)
+    return entries
 
 
 async def shared_resume(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> tuple[Document, bytes]:
@@ -174,8 +202,8 @@ async def shared_resume(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID
 async def decide(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID, decision: str,
                  comment: str | None) -> ShortlistEntry:
     row = await _hm_row(db, user, entry_id)
-    if row.status == CandidateStatus.INTERVIEW_SCHEDULED:
-        raise ConflictError("The interview is already scheduled.")
+    if row.status == CandidateStatus.INTERVIEW_SCHEDULED or await _scheduled_at(db, [row.id]):
+        raise ConflictError("The interview is already scheduled, so the decision can't change.")
     row.status = CandidateStatus.APPROVED if decision == "approved" else CandidateStatus.REJECTED
     row.updated_by = user.id
     await _sync_candidate_status(db, row)
@@ -185,16 +213,37 @@ async def decide(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID, decis
     return await to_entry(db, row)
 
 
+async def schedule_interviews(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID | None) -> int:
+    """One click: schedule interviews for every approved candidate shared with this hiring
+    manager (optionally one job) that isn't scheduled yet. The status stays "approved";
+    the scheduling is recorded in the history."""
+    query = select(MatchingShortlisting).where(
+        MatchingShortlisting.shared_to == user.id,
+        MatchingShortlisting.status == CandidateStatus.APPROVED,
+    )
+    if job_id:
+        query = query.where(MatchingShortlisting.job_id == job_id)
+    rows = list((await db.execute(query)).scalars())
+    already = await _scheduled_at(db, [r.id for r in rows])
+    todo = [r for r in rows if str(r.id) not in already]
+    if not todo:
+        raise ConflictError("There are no approved candidates waiting for an interview.")
+    for row in todo:
+        await _log(user, Action.INTERVIEW_SCHEDULED, row, scheduled_together=len(todo))
+    return len(todo)
+
+
 async def schedule_interview(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> ShortlistEntry:
+    """Schedule one approved candidate (the status stays "approved")."""
     row = await _hm_row(db, user, entry_id)
     if row.status != CandidateStatus.APPROVED:
         raise ConflictError("Only approved candidates can be scheduled.")
-    row.status = CandidateStatus.INTERVIEW_SCHEDULED
-    row.updated_by = user.id
-    await _sync_candidate_status(db, row)
-    await db.commit()
+    if await _scheduled_at(db, [row.id]):
+        raise ConflictError("The interview is already scheduled.")
     await _log(user, Action.INTERVIEW_SCHEDULED, row)
-    return await to_entry(db, row)
+    entry = await to_entry(db, row)
+    entry.interview_scheduled_at = (await _scheduled_at(db, [row.id])).get(str(row.id))
+    return entry
 
 
 # ---------- history ----------

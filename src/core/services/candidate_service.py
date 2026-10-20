@@ -78,14 +78,15 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
     if live is not None and not live.finished:
         return BatchStatus(
             batch_id=batch_id, stage=live.stage, finished=False, total=live.total,
-            saved=live.saved, failed=live.failed, failures=failures, events=events,
+            saved=live.saved, failed=live.failed, needs_review=live.needs_review,
+            failures=failures, events=events,
             embeddings_pending=pending, embeddings_note=note,
             seconds=round(time.monotonic() - live.started_at, 1),
         )
     return BatchStatus(
         batch_id=batch_id, stage=stage, finished=bool(summary),
         total=summary.get("total"), saved=summary.get("saved"), failed=summary.get("failed"),
-        seconds=summary.get("seconds"), embeddings_pending=pending, embeddings_note=note,
+        needs_review=summary.get("needs_review"), seconds=summary.get("seconds"), embeddings_pending=pending, embeddings_note=note,
         failures=failures, events=events,
     )
 

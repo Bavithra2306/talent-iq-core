@@ -26,8 +26,6 @@ from src.handlers.http_clients.llm_client import LLMError
 
 logger = logging.getLogger("talentiq.resumes")
 
-# Tells the AI the recruiter has looked at the file, so it extracts the fields anyway.
-_CONFIRMED = "NOTE: A recruiter has checked this file and confirmed it is a resume.\n\n"
 
 
 async def _get(db: AsyncSession, document_id: uuid.UUID) -> Document:
@@ -75,12 +73,19 @@ async def accept_as_resume(db: AsyncSession, user: CurrentUser, document_id: uui
     if not parsed.text.strip():
         raise UnprocessableError("No text could be read from this file.")
     try:
-        results, model = await resume_service._extract_group([_CONFIRMED + parsed.text])
+        # The recruiter confirmed it: skip step 1 and go straight to extraction.
+        results, model = await resume_service._extract_group([parsed.text])
     except LLMError as exc:
         raise ServiceUnavailableError("The AI service is busy. Please try again in a minute.") from exc
     result = results.get(1)
     if result is None:
         raise ServiceUnavailableError("The AI service could not read this file. Please try again.")
+    if not resume_service.has_resume_details(result):
+        # Guard against a wrong click: nothing that looks like a resume was found.
+        raise UnprocessableError(
+            "We couldn't find resume details (name, skills or work history) in this file. "
+            "Check it again or delete it."
+        )
 
     item = resume_service.BatchItem(document.id, document.original_filename or "resume", document.file_path)
     document.document_type = resume_service.DOC_TYPE_RESUME

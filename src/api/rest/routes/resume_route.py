@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, statu
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser, Role, require_roles
+from src.api.rest.file_response import file_response
 from src.api.rest.schemas.candidate_schema import (
     CandidateDetail,
     CandidateListResponse,
@@ -23,7 +24,6 @@ from src.core.services import (
 )
 from src.core.services.candidate_service import SortField
 from src.data.clients.postgres import get_db
-from src.utils.file_types import media_type
 
 ResumeRouter = APIRouter(tags=["Resumes"])
 
@@ -110,18 +110,16 @@ async def get_candidate(
     return await candidate_service.get_candidate(db, candidate_id)
 
 
-@ResumeRouter.get("/candidates/{candidate_id}/resume")
+@ResumeRouter.get("/candidates/{candidate_id}/resume", summary="View a resume",
+                  description="PDF opens in the browser, Word files as a preview page.")
 async def download_resume(
     candidate_id: uuid.UUID,
+    download: bool = Query(default=False, description="true: the original file as a download"),
     db: AsyncSession = Depends(get_db),
     _: CurrentUser = Depends(recruiter_only),
 ):
     document, content = await candidate_service.get_resume_file(db, candidate_id)
-    filename = (document.original_filename or "resume").replace('"', "")
-    return Response(
-        content=content, media_type=media_type(content),
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
+    return file_response(content, document.original_filename or "resume", download)
 
 
 # ---------- files the AI judged "not a resume" ----------
@@ -136,12 +134,10 @@ async def review_files(db: AsyncSession = Depends(get_db), _: CurrentUser = Depe
 
 
 @ResumeRouter.get("/resumes/review/{document_id}/file", summary="Open a file waiting for review")
-async def review_file(document_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-                      _: CurrentUser = Depends(recruiter_only)):
+async def review_file(document_id: uuid.UUID, download: bool = False,
+                      db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(recruiter_only)):
     document, content = await resume_review_service.get_file(db, document_id)
-    filename = (document.original_filename or "file").replace('"', "")
-    return Response(content=content, media_type=media_type(content),
-                    headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    return file_response(content, document.original_filename or "file", download)
 
 
 @ResumeRouter.post(

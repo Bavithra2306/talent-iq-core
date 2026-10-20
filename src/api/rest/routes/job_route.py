@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import (
@@ -9,12 +9,12 @@ from src.api.rest.dependencies import (
     get_current_user,
     require_roles,
 )
+from src.api.rest.file_response import file_response
 from src.api.rest.schemas.job_schema import JobExtractResponse, JobListResponse
 from src.constants.enums import JobStatus
 from src.core.services import jd_service
 from src.data.clients.postgres import get_db
 from src.schema.job_schema import JobCreate, JobRead, JobUpdate
-from src.utils.file_types import media_type
 
 JobRouter = APIRouter(prefix="/jobs", tags=["Jobs"])
 
@@ -80,16 +80,13 @@ async def update_job(
     return await jd_service.update_job(db, user, job_id, data)
 
 
-@JobRouter.get("/{job_id}/view")
+@JobRouter.get("/{job_id}/view", summary="View the job description",
+               description="PDF and images open in the browser, Word files as a preview page.")
 async def view_jd(
     job_id: uuid.UUID,
+    download: bool = Query(default=False, description="true: the original file as a download"),
     db: AsyncSession = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),
 ):
     document, content = await jd_service.get_jd_file(db, job_id)
-    filename = (document.original_filename or "jd.pdf").replace('"', "")
-    return Response(
-        content=content,
-        media_type=media_type(content),
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
+    return file_response(content, document.original_filename or "job-description", download)

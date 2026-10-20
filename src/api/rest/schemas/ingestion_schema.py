@@ -34,6 +34,7 @@ class BatchStatus(BaseModel):
     total: int | None = None
     saved: int | None = None
     failed: int | None = None
+    needs_review: int | None = None
     seconds: float | None = None
     embeddings_pending: int | None = None
     embeddings_note: str | None = None

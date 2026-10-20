@@ -87,6 +87,8 @@ class ShortlistEntry(BaseModel):
     shared_by: uuid.UUID | None = None
     shared_to: uuid.UUID | None = None
     job_title: str | None = None
+    # Set once the hiring manager scheduled the interview (the status stays "approved").
+    interview_scheduled_at: datetime | None = None
     created_at: datetime
     updated_at: datetime | None = None
 
@@ -153,6 +155,14 @@ class ShareRequest(BaseModel):
 class ShareResult(BaseModel):
     shared: int
     skipped: list[dict] = []
+
+
+class ScheduleRequest(BaseModel):
+    job_id: uuid.UUID | None = Field(default=None, description="only this job; default: all jobs")
+
+
+class ScheduleResult(BaseModel):
+    scheduled: int
 
 
 class DecisionRequest(BaseModel):

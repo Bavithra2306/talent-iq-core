@@ -75,7 +75,8 @@ class Settings(BaseSettings):
     # scanned and garbled PDFs. False: run every PDF through Docling's layout model
     # (about 3.5 s per file on CPU, so 100 resumes take several minutes).
     pdf_fast_path: bool = True
-    extract_batch_size: int = 8  # resumes per LLM request
+    extract_batch_size: int = 8  # resumes per LLM extraction request (step 2)
+    check_batch_size: int = 20  # files per LLM "is it a resume?" request (step 1)
     max_resumes_per_upload: int = 150  # files per upload (or files inside one zip)
 
     # Resume sourcing (all optional keys raise the free rate limits)

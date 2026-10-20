@@ -1,14 +1,17 @@
 import uuid
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser, Role, require_roles
+from src.api.rest.file_response import file_response
 from src.api.rest.schemas.shortlist_schema import (
     DecisionRequest,
     NotesUpdate,
     ReviewEvent,
+    ScheduleRequest,
+    ScheduleResult,
     ShareRequest,
     ShareResult,
     ShortlistEntry,
@@ -18,7 +21,6 @@ from src.constants.enums import CandidateStatus
 from src.core.services import review_service
 from src.data.clients.postgres import get_db
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
-from src.utils.file_types import media_type
 
 ReviewRouter = APIRouter(tags=["Review"])
 
@@ -65,12 +67,10 @@ async def shared_with_me(job_id: uuid.UUID | None = None,
 
 
 @ReviewRouter.get("/review/{entry_id}/resume")
-async def shared_resume(entry_id: uuid.UUID, db: AsyncSession = Depends(get_db),
+async def shared_resume(entry_id: uuid.UUID, download: bool = False, db: AsyncSession = Depends(get_db),
                         user: CurrentUser = Depends(hiring_manager_only)):
     document, content = await review_service.shared_resume(db, user, entry_id)
-    filename = (document.original_filename or "resume").replace('"', "")
-    return Response(content=content, media_type=media_type(content),
-                    headers={"Content-Disposition": f'inline; filename="{filename}"'})
+    return file_response(content, document.original_filename or "resume", download)
 
 
 @ReviewRouter.post("/review/{entry_id}/decision", response_model=ShortlistEntry)
@@ -83,8 +83,19 @@ async def decide(entry_id: uuid.UUID, body: DecisionRequest, db: AsyncSession = 
 @ReviewRouter.post("/review/{entry_id}/schedule-interview", response_model=ShortlistEntry)
 async def schedule_interview(entry_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                              user: CurrentUser = Depends(hiring_manager_only)):
-    """Mark an approved candidate as 'interview scheduled' (status change only)."""
+    """Schedule one approved candidate's interview (the status stays approved)."""
     return await review_service.schedule_interview(db, user, entry_id)
+
+
+@ReviewRouter.post(
+    "/review/schedule-interviews", response_model=ScheduleResult,
+    summary="Schedule interviews for all approved",
+    description="One click for every approved candidate not scheduled yet (optionally one job). "
+                "Statuses stay approved; the scheduling is recorded in the history.",
+)
+async def schedule_all(body: ScheduleRequest, db: AsyncSession = Depends(get_db),
+                       user: CurrentUser = Depends(hiring_manager_only)):
+    return ScheduleResult(scheduled=await review_service.schedule_interviews(db, user, body.job_id))
 
 
 # ---------- both ----------

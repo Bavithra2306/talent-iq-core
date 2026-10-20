@@ -32,6 +32,7 @@ from src.constants.enums import (
     FileType,
     PipelineStage,
 )
+from src.control.agents.prompts import resume_check as check_prompt
 from src.control.agents.prompts import resume_extraction as prompt
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import ParsedDocument, detect_file_type
@@ -81,6 +82,7 @@ class BatchProgress:
     parsed: int = 0
     saved: int = 0
     failed: int = 0
+    needs_review: int = 0  # judged "not a resume": waiting for the recruiter
     failures: list[dict] = field(default_factory=list)
     started_at: float = field(default_factory=time.monotonic)
     finished: bool = False
@@ -243,6 +245,8 @@ async def log_stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, sta
 async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: BatchItem,
                 reason: str, *, needs_review: bool = False) -> None:
     state.failed += 1
+    if needs_review:
+        state.needs_review += 1
     state.failures.append({"filename": item.filename, "reason": reason})
     await log_event(
         user_id=user_id, category=ActionCategory.EXTRACTION, action=Action.EXTRACTION_FAILED,
@@ -279,6 +283,45 @@ async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) 
         task.add_done_callback(_background.discard)
 
 
+def has_resume_details(result: prompt.ExtractedResume) -> bool:
+    """A resume names a person, or lists skills or work history."""
+    return bool((result.name or "").strip() or result.skills or result.roles)
+
+
+async def _check_group(texts: list[str]) -> dict[int, str]:
+    """AI step 1 for a list of texts. Returns {1-based position: resume / jd / other}."""
+    batch = await llm.chat_json(
+        system=check_prompt.SYSTEM_PROMPT,
+        user=check_prompt.build_user_prompt(texts),
+        response_model=check_prompt.CheckBatch,
+        max_tokens=min(4000, 40 * len(texts) + 200),
+    )
+    return {r.index: r.document_type for r in batch.results if 1 <= r.index <= len(texts)}
+
+
+async def check_documents(texts: list[str]) -> list[str | None]:
+    """Step 1 for any number of texts: "resume", "jd", "other", or None when the AI could
+    not answer (those go on to extraction, so a busy AI never loses a resume)."""
+    size = max(1, settings.check_batch_size)
+    answers: list[str | None] = [None] * len(texts)
+
+    async def run(start: int) -> None:
+        chunk = texts[start:start + size]
+        for attempt in range(2):
+            try:
+                found = await _check_group(chunk)
+            except LLMError:
+                continue
+            for position, kind in found.items():
+                answers[start + position - 1] = kind
+            if len(found) == len(chunk):
+                return
+        logger.warning("resume check incomplete for %d file(s)", sum(a is None for a in answers[start:start + size]))
+
+    await asyncio.gather(*(run(i) for i in range(0, len(texts), size)))
+    return answers
+
+
 async def _extract_group(texts: list[str]) -> tuple[dict[int, prompt.ExtractedResume], str]:
     """One LLM call for a list of texts. Returns {1-based position: result}, model used."""
     batch, model = await llm.chat_json_with_model(
@@ -292,7 +335,7 @@ async def _extract_group(texts: list[str]) -> tuple[dict[int, prompt.ExtractedRe
 
 async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
                          group: list[tuple[BatchItem, ParsedDocument]]) -> None:
-    """Extract, embed and save one group of resumes. Never raises."""
+    """AI step 2 for one group of resumes: extract the fields and save. Never raises."""
     try:
         extracted: dict[int, tuple[prompt.ExtractedResume, str]] = {}
         pending = list(range(1, len(group) + 1))
@@ -323,11 +366,10 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
         valid: list[tuple[BatchItem, ParsedDocument, prompt.ExtractedResume, str]] = []
         for position, (result, model) in sorted(extracted.items()):
             item, parsed = group[position - 1]
-            if result.document_type != "resume":
-                looks_like = "a job description" if result.document_type == "jd" else "something else"
+            if not has_resume_details(result):
                 await fail_item(batch_id, user_id, state, item,
-                                f"Not a resume (looks like {looks_like}). Waiting for your review.",
-                                needs_review=True)
+                                "No resume details found (name, skills or work history). "
+                                "Waiting for your review.", needs_review=True)
             else:
                 valid.append((item, parsed, result, model))
         if not valid:
