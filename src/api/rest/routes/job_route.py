@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import (
@@ -36,11 +36,16 @@ async def extract_jd(
 @JobRouter.post("", response_model=JobRead, status_code=status.HTTP_201_CREATED)
 async def create_job(
     data: JobCreate,
+    confirm_duplicate: bool = Query(default=False, description="save even if a job with this title exists"),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(can_manage_jobs),
 ):
-    """Save a job: the reviewed draft (with jd_id from /extract) or a form-typed JD (no jd_id)."""
-    return await jd_service.create_job(db, user, data)
+    """Save a job: the reviewed draft (with jd_id from /extract) or a form-typed JD (no jd_id).
+
+    A file already used by an active job is refused. A job with the same title and category
+    as an active one returns 409 code "duplicate_job" unless confirm_duplicate=true.
+    """
+    return await jd_service.create_job(db, user, data, confirm_duplicate)
 
 
 @JobRouter.get("", response_model=JobListResponse)
@@ -90,3 +95,18 @@ async def view_jd(
 ):
     document, content = await jd_service.get_jd_file(db, job_id)
     return file_response(content, document.original_filename or "job-description", download)
+
+
+@JobRouter.delete(
+    "/{job_id}", status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a job",
+    description="Soft delete: the job disappears from the app, but stays in the database with its "
+                "file, match results and history.",
+)
+async def delete_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(can_manage_jobs),
+):
+    await jd_service.delete_job(db, user, job_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

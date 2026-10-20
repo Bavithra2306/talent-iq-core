@@ -169,7 +169,7 @@ async def job_statuses(db: AsyncSession, candidate_ids: list[uuid.UUID]) -> dict
         select(MatchingShortlisting.candidate_id, MatchingShortlisting.job_id, Job.title,
                MatchingShortlisting.status, MatchingShortlisting.total_score)
         .join(Job, Job.id == MatchingShortlisting.job_id)
-        .where(MatchingShortlisting.candidate_id.in_(candidate_ids))
+        .where(MatchingShortlisting.candidate_id.in_(candidate_ids), Job.deleted_at.is_(None))
         .order_by(MatchingShortlisting.total_score.desc().nulls_last())
     )
     result: dict[uuid.UUID, list[JobStatusItem]] = {}

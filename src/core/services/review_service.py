@@ -139,7 +139,8 @@ async def set_shortlisted(db: AsyncSession, user: CurrentUser, entry_id: uuid.UU
 async def share(db: AsyncSession, user: CurrentUser, access_token: str, job_id: uuid.UUID,
                 hiring_manager_id: uuid.UUID, entry_ids: list[uuid.UUID] | None,
                 note: str | None) -> ShareResult:
-    if await db.get(Job, job_id) is None:
+    job = await db.get(Job, job_id)
+    if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     manager = await find_user(access_token, hiring_manager_id, "hiring_manager")
     if manager is None:
@@ -175,7 +176,9 @@ async def share(db: AsyncSession, user: CurrentUser, access_token: str, job_id: 
 
 async def list_shared(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID | None,
                       status_filter: CandidateStatus | None) -> list[ShortlistEntry]:
-    query = (select(MatchingShortlisting).where(MatchingShortlisting.shared_to == user.id)
+    query = (select(MatchingShortlisting)
+             .join(Job, Job.id == MatchingShortlisting.job_id)
+             .where(MatchingShortlisting.shared_to == user.id, Job.deleted_at.is_(None))
              .order_by(MatchingShortlisting.job_id, MatchingShortlisting.total_score.desc()))
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)
@@ -217,9 +220,10 @@ async def schedule_interviews(db: AsyncSession, user: CurrentUser, job_id: uuid.
     """One click: schedule interviews for every approved candidate shared with this hiring
     manager (optionally one job) that isn't scheduled yet. The status stays "approved";
     the scheduling is recorded in the history."""
-    query = select(MatchingShortlisting).where(
+    query = select(MatchingShortlisting).join(Job, Job.id == MatchingShortlisting.job_id).where(
         MatchingShortlisting.shared_to == user.id,
         MatchingShortlisting.status == CandidateStatus.APPROVED,
+        Job.deleted_at.is_(None),
     )
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)

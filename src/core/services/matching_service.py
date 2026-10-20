@@ -162,7 +162,7 @@ async def start_run(
     db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, request: ShortlistRunRequest
 ) -> str:
     job = await db.get(Job, job_id)
-    if job is None:
+    if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     if not job.skills:
         raise BadRequestError("The job has no required skills; add them before matching.")

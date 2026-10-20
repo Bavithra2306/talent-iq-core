@@ -20,6 +20,7 @@ from src.control.agents.prompts import jd_extraction
 from src.core.exceptions import (
     BadRequestError,
     ConflictError,
+    DuplicateJobError,
     FileTooLargeError,
     NotFoundError,
     ServiceUnavailableError,
@@ -170,13 +171,11 @@ async def extract_jd(
             "This file was already uploaded as a resume.",
         )
     else:
-        warnings.append("This JD file was uploaded before; reusing the stored copy.")
+        pass  # the same file again: reuse the stored copy
 
     existing_job_id = (
-        await db.execute(select(Job.id).where(Job.jd_id == document.id).limit(1))
+        await db.execute(select(Job.id).where(Job.jd_id == document.id, Job.deleted_at.is_(None)).limit(1))
     ).scalar_one_or_none()
-    if existing_job_id:
-        warnings.append("A job already exists for this JD.")
 
     # Parse
     started = utcnow()
@@ -261,7 +260,13 @@ async def extract_jd(
 
 # ---------- CRUD ----------
 
-async def create_job(db: AsyncSession, user: CurrentUser, data: JobCreate) -> Job:
+def _active():
+    return Job.deleted_at.is_(None)
+
+
+async def create_job(
+    db: AsyncSession, user: CurrentUser, data: JobCreate, confirm_duplicate: bool = False
+) -> Job:
     data.skills, data.nice_to_have_skills = split_skill_lists(
         data.skills, data.nice_to_have_skills
     )
@@ -270,9 +275,27 @@ async def create_job(db: AsyncSession, user: CurrentUser, data: JobCreate) -> Jo
     if data.jd_id is not None:
         document = await db.get(Document, data.jd_id)
         if document is None or document.document_type != DOC_TYPE_JD:
-            raise NotFoundError("JD document not found.")
+            raise NotFoundError("Job description file not found.")
+        # The same file can back only one active job.
+        same_file = (await db.execute(
+            select(Job).where(Job.jd_id == document.id, _active()).limit(1)
+        )).scalar_one_or_none()
+        if same_file is not None:
+            raise ConflictError(f'This job description is already used by the job "{same_file.title}".')
         jd_id = document.id
-    else:
+
+    if not confirm_duplicate:
+        same_name = (await db.execute(
+            select(Job).where(_active(), func.lower(Job.title) == data.title.strip().lower(),
+                              Job.category.is_not_distinct_from(data.category)).limit(1)
+        )).scalar_one_or_none()
+        if same_name is not None:
+            raise DuplicateJobError(
+                f'A job called "{same_name.title}" already exists'
+                f'{f" in {same_name.category}" if same_name.category else ""}. Save another one anyway?'
+            )
+
+    if data.jd_id is None:
         pdf_bytes = render_jd_pdf(data)
         filename = f"{data.title[:80]}.pdf"
         document = await _store_document(
@@ -322,7 +345,7 @@ async def list_jobs(
     limit: int,
     offset: int,
 ) -> tuple[list[Job], int]:
-    query = select(Job)
+    query = select(Job).where(_active())
     if status_filter:
         query = query.where(Job.status == status_filter)
     if category:
@@ -340,9 +363,21 @@ async def list_jobs(
 
 async def get_job(db: AsyncSession, job_id: uuid.UUID) -> Job:
     job = await db.get(Job, job_id)
-    if job is None:
+    if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     return job
+
+
+async def delete_job(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID) -> None:
+    """Soft delete: hide the job everywhere; the row, file, results and history stay."""
+    job = await get_job(db, job_id)
+    job.deleted_at = utcnow()
+    job.deleted_by = user.id
+    await db.commit()
+    await log_event(
+        user_id=user.id, job_id=job.id, input_data={"job_deleted": True},
+        output_data={"title": job.title},
+    )
 
 
 async def update_job(

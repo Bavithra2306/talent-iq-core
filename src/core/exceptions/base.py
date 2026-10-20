@@ -39,6 +39,12 @@ class ConflictError(AppError):
     code = "conflict"
 
 
+class DuplicateJobError(ConflictError):
+    """Another active job has the same title and category; the user may save anyway."""
+
+    code = "duplicate_job"
+
+
 class FileTooLargeError(AppError):
     """An uploaded file is over the size limit."""
 

@@ -92,7 +92,8 @@ async def list_entries(
         select(MatchingShortlisting, Candidate, ResumeExtraction.skills)
         .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
         .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == MatchingShortlisting.resume_id)
-        .where(MatchingShortlisting.total_score.is_not(None))
+        .join(Job, Job.id == MatchingShortlisting.job_id)
+        .where(MatchingShortlisting.total_score.is_not(None), Job.deleted_at.is_(None))
     )
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)
@@ -173,7 +174,7 @@ async def apply_weights(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, 
     except ValueError as exc:
         raise UnprocessableError(str(exc)) from exc
     job = await db.get(Job, job_id)
-    if job is None:
+    if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
 
     config = (await db.execute(select(ScoringConfig).where(ScoringConfig.job_id == job_id))).scalar_one_or_none()
@@ -241,7 +242,8 @@ async def shortlist_top_k(
     changed. Everyone else in this job's results is set to shortlisted or back to matched.
     Returns (shortlisted, number of candidates that passed the filters).
     """
-    if await db.get(Job, job_id) is None:
+    job = await db.get(Job, job_id)
+    if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     entries, total, weights = await list_entries(
         db, job_id=job_id, location=filters.location, category=filters.category,

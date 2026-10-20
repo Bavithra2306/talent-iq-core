@@ -1,6 +1,7 @@
 import uuid
+from datetime import datetime
 
-from sqlalchemy import ForeignKey, Integer, String, Uuid
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,3 +30,6 @@ class Job(IdMixin, AuditMixin, Base):
     # required skills list
     skills: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     nice_to_have_skills: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    # Soft delete: the job is hidden everywhere but stays in the database.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
