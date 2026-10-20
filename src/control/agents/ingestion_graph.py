@@ -113,12 +113,12 @@ async def finish(state: IngestionState) -> dict:
     progress = svc.progress[batch_id]
     summary = {
         "finished": True, "total": progress.total, "saved": progress.saved,
-        "failed": progress.failed, "needs_review": progress.needs_review, "embeddings_pending": await svc.count_missing_embeddings(),
+        "failed": progress.failed, "needs_review": progress.needs_review,
+        "new_candidates": progress.new_candidates, "updated_candidates": progress.updated_candidates, "embeddings_pending": await svc.count_missing_embeddings(),
         "seconds": round(time.monotonic() - progress.started_at, 1),
     }
-    # Files waiting for the recruiter's review are not failures.
-    real_failures = progress.failed - progress.needs_review
-    if real_failures == 0:
+    # Files waiting for the recruiter's review are not failures (they are counted apart).
+    if progress.failed == 0:
         await svc.log_stage(batch_id, user_id, PipelineStage.READING, progress,
                             action=Action.EXTRACTION_COMPLETED, **summary)
     elif progress.saved > 0 or progress.needs_review > 0:

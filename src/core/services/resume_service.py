@@ -82,7 +82,9 @@ class BatchProgress:
     parsed: int = 0
     saved: int = 0
     failed: int = 0
-    needs_review: int = 0  # judged "not a resume": waiting for the recruiter
+    needs_review: int = 0  # judged "not a resume": waiting for the recruiter (not a failure)
+    new_candidates: int = 0  # saved resumes of people we didn't have
+    updated_candidates: int = 0  # saved resumes of people we already had (same email / phone)
     failures: list[dict] = field(default_factory=list)
     started_at: float = field(default_factory=time.monotonic)
     finished: bool = False
@@ -244,9 +246,10 @@ async def log_stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, sta
 
 async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: BatchItem,
                 reason: str, *, needs_review: bool = False) -> None:
-    state.failed += 1
     if needs_review:
         state.needs_review += 1
+    else:
+        state.failed += 1
     state.failures.append({"filename": item.filename, "reason": reason})
     await log_event(
         user_id=user_id, category=ActionCategory.EXTRACTION, action=Action.EXTRACTION_FAILED,
@@ -378,10 +381,12 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
         # Save candidates now; embeddings are added afterwards for the whole batch in a few
         # paced requests (see embed_missing), so a busy embedding service never loses a resume.
         async with AsyncSessionLocal() as db:
-            for item, parsed, result, model in valid:
-                await _save_resume(db, user_id, item, parsed, result, model)
+            created = [await _save_resume(db, user_id, item, parsed, result, model)
+                       for item, parsed, result, model in valid]
             await db.commit()
         state.saved += len(valid)
+        state.new_candidates += sum(created)
+        state.updated_candidates += len(created) - sum(created)
     except Exception as exc:
         logger.exception("group failed in batch %s", batch_id)
         for item, _ in group:
@@ -390,7 +395,8 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
 
 
 async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, parsed: ParsedDocument,
-                       result: prompt.ExtractedResume, model: str) -> None:
+                       result: prompt.ExtractedResume, model: str) -> bool:
+    """Save one resume. Returns True for a new person, False when it updated someone we had."""
     document = await db.get(Document, item.document_id)
     if parsed.is_scanned and document.file_type != FileType.SCANNED_PDF:
         document.file_type = FileType.SCANNED_PDF
@@ -421,6 +427,7 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
         "category": normalize_category(result.category),
         "total_years_experience": years,
     }
+    created = candidate is None
     if candidate is None:
         candidate = Candidate(
             **fields, current_resume_id=document.id,
@@ -447,6 +454,7 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
         created_by=user_id,
     ))
     await db.flush()
+    return created
 
 
 # ---------- embeddings ----------

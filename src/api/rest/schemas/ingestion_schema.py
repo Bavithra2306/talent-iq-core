@@ -33,12 +33,15 @@ class BatchStatus(BaseModel):
     finished: bool
     total: int | None = None
     saved: int | None = None
-    failed: int | None = None
-    needs_review: int | None = None
+    failed: int | None = None  # could not be read (not counting files waiting for review)
+    needs_review: int | None = None  # judged "not a resume", waiting for the recruiter
+    new_candidates: int | None = None
+    updated_candidates: int | None = None
     seconds: float | None = None
     embeddings_pending: int | None = None
     embeddings_note: str | None = None
-    failures: list[RejectedFile] = []
+    failures: list[RejectedFile] = []  # files that could not be read, with the reason
+    review: list[RejectedFile] = []  # files judged "not a resume"
     events: list[BatchEvent]
 
 

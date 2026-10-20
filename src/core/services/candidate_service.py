@@ -65,10 +65,13 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
                 f"after {quota['resumes_at']}. Matching still works meanwhile."
                 if quota["paused"] else f"{pending} resume(s) are waiting for embeddings.")
     live = resume_service.progress.get(batch_id)
-    failures = [
+    failed_rows = [
         RejectedFile(filename=json.loads(r.input_data).get("filename", "?"), reason=r.output_data or "")
         for r in rows if r.actions and r.actions.value == "extraction_failed"
     ]
+    # "Not a resume" files wait for the recruiter; they are not failures.
+    review = [f for f in failed_rows if f.reason.endswith("Waiting for your review.")]
+    failures = [f for f in failed_rows if not f.reason.endswith("Waiting for your review.")]
     summary: dict = {}
     for r in reversed(rows):
         if r.output_data and '"finished": true' in r.output_data:
@@ -79,15 +82,18 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
         return BatchStatus(
             batch_id=batch_id, stage=live.stage, finished=False, total=live.total,
             saved=live.saved, failed=live.failed, needs_review=live.needs_review,
-            failures=failures, events=events,
+            new_candidates=live.new_candidates, updated_candidates=live.updated_candidates,
+            failures=failures, review=review, events=events,
             embeddings_pending=pending, embeddings_note=note,
             seconds=round(time.monotonic() - live.started_at, 1),
         )
     return BatchStatus(
         batch_id=batch_id, stage=stage, finished=bool(summary),
-        total=summary.get("total"), saved=summary.get("saved"), failed=summary.get("failed"),
-        needs_review=summary.get("needs_review"), seconds=summary.get("seconds"), embeddings_pending=pending, embeddings_note=note,
-        failures=failures, events=events,
+        total=summary.get("total"), saved=summary.get("saved"), failed=len(failures) if summary else None,
+        needs_review=summary.get("needs_review", len(review) if summary else None),
+        new_candidates=summary.get("new_candidates"), updated_candidates=summary.get("updated_candidates"),
+        seconds=summary.get("seconds"), embeddings_pending=pending, embeddings_note=note,
+        failures=failures, review=review, events=events,
     )
 
 
