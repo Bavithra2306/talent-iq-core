@@ -59,6 +59,14 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_SafeRedirect)
 
 
+# Hosts that publish rate limits for API use get shorter gaps (GitHub only with a token).
+_HOST_INTERVALS = {
+    "api.stackexchange.com": 0.1,  # limit: 30 requests a second
+    "datasets-server.huggingface.co": 0.3,
+}
+_GITHUB_HOSTS = {"api.github.com": 0.25, "raw.githubusercontent.com": 0.25}  # 5,000 an hour with a token
+
+
 class PoliteFetcher:
     def __init__(self, min_interval: float = 2.0):
         self.min_interval = min_interval
@@ -68,7 +76,10 @@ class PoliteFetcher:
 
     async def _wait_turn(self, host: str) -> None:
         async with self._lock:
-            wait = self._last.get(host, 0) + self.min_interval - time.monotonic()
+            interval = _HOST_INTERVALS.get(host, self.min_interval)
+            if settings.github_token and host in _GITHUB_HOSTS:
+                interval = _GITHUB_HOSTS[host]
+            wait = self._last.get(host, 0) + interval - time.monotonic()
             self._last[host] = time.monotonic() + max(wait, 0)
         if wait > 0:
             await asyncio.sleep(wait)

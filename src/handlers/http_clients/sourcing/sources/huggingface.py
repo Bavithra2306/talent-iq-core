@@ -74,9 +74,11 @@ async def collect(dataset: str, category: str | None, max_results: int) -> Sourc
         else:
             pool = list(range(spec["rows"]))
         picks = random.sample(pool, min(max_results, len(pool)))
+        if len(pool) < max_results:
+            result.note = f"Only {len(pool)} resumes of this field exist in {dataset}."
         rows = await asyncio.gather(*[_rows(dataset, i, 1) for i in picks], return_exceptions=True)
     except FetchError as exc:
-        result.errors.append(f"Hugging Face request failed: {exc}")
+        result.errors.append(f"Hugging Face is not answering right now ({exc}). Please try again later.")
         result.partial = True
         return result
 
@@ -93,6 +95,7 @@ async def collect(dataset: str, category: str | None, max_results: int) -> Sourc
         pdf = text_to_pdf(f"Resume - {label}" if label else "Resume", text[:20000],
                           footer=f"Source: Hugging Face dataset {dataset}, row {row_idx}.")
         slug = dataset.split("/")[-1]
-        result.files.append(SourcedFile(f"hf_{slug}_{row_idx}.pdf", pdf, "huggingface",
+        resume_id = str(row.get("ID") or row_idx)  # opensporks rows carry the LiveCareer resume ID
+        result.files.append(SourcedFile(f"hf_{slug}_{resume_id}.pdf", pdf, "huggingface",
                                         f"https://huggingface.co/datasets/{dataset} row {row_idx}"))
     return result

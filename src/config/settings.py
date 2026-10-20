@@ -89,10 +89,14 @@ class Settings(BaseSettings):
 
     # Matching / shortlisting
     score_batch_size: int = 8  # candidates per LLM scoring request
-    # Matching: every resume in the job's category is compared with the job. Resumes with
-    # cosine similarity from the first level up to 1.0 go to the LLM; if none reach it, the
-    # next level is tried, and so on. Nobody at the last level means "no match".
-    match_similarity_levels: list[float] = [0.75, 0.60, 0.50]
+    # Matching: every resume in the job's category is compared with the job (cosine similarity).
+    # All resumes at match_strong_similarity or more are scored by the LLM. If fewer than
+    # match_min_strong reach it, the next most similar resumes are added (never below
+    # match_min_similarity) until match_fill_to resumes are scored.
+    match_strong_similarity: float = 0.75
+    match_min_strong: int = 10
+    match_fill_to: int = 20
+    match_min_similarity: float = 0.50
     match_max_llm: int = 150  # safety cap on LLM-scored candidates per run
     explain_batch_size: int = 5  # candidates per LLM explanation request
     pool_multiplier: int = 3  # candidates sent to the LLM = top_k x this ...

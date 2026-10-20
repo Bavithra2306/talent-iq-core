@@ -71,6 +71,8 @@ async def collect(category: str | None, max_results: int) -> SourceResult:
         return result
     if not picked:
         result.errors.append(f"No resumes for category '{category}' in the Kaggle dataset.")
+    elif len(picked) < max_results:
+        result.note = f"Only {len(picked)} resumes of this field exist in the Kaggle dataset."
     for name, data, folder in picked:
         filename = f"kaggle_{folder.lower()}_{Path(name).stem}.pdf"
         if is_resume_file(data, filename):

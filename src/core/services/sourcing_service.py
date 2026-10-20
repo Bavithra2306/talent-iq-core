@@ -9,7 +9,10 @@ scraping_failed with what it found.
 
 import asyncio
 import logging
+import re
 import uuid
+
+from sqlalchemy import select
 
 from src.api.rest.dependencies import CurrentUser
 from src.api.rest.schemas.sourcing_schema import SourceInfo, SourcingRunRequest
@@ -19,6 +22,7 @@ from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.core.services import resume_service
 from src.core.services.audit_service import log_event
 from src.data.clients.postgres import AsyncSessionLocal
+from src.data.models.postgres.document import Document
 from src.handlers.http_clients.sourcing.keywords import Resolved, resolve
 from src.handlers.http_clients.sourcing.sources import (
     github,
@@ -40,7 +44,7 @@ def catalog() -> list[SourceInfo]:
             type="huggingface", name="Hugging Face resume datasets",
             description="Real resumes from free public collections (names removed), picked by field.",
             parameters={"dataset": list(huggingface.DATASETS), "category": SUGGESTED_CATEGORIES,
-                        "max_results": "1-50"},
+                        "max_results": "1-200"},
             configured=True, limits="Free, no sign-up. The first time you pick a field it takes about 30 seconds to prepare.",
             terms="Public collections on huggingface.co, fine for testing and demos.",
             example={"type": "huggingface", "dataset": "opensporks/resumes", "category": "IT", "max_results": 20},
@@ -48,7 +52,7 @@ def catalog() -> list[SourceInfo]:
         SourceInfo(
             type="kaggle", name="Kaggle Resume Dataset",
             description="About 2,400 real PDF resumes across 24 fields.",
-            parameters={"category": SUGGESTED_CATEGORIES, "max_results": "1-50"},
+            parameters={"category": SUGGESTED_CATEGORIES, "max_results": "1-200"},
             configured=kaggle.configured(),
             needs=None if kaggle.configured() else "Ask your admin to add a free Kaggle key (KAGGLE_USERNAME and KAGGLE_KEY).",
             limits="Downloaded once, then unlimited.",
@@ -59,7 +63,7 @@ def catalog() -> list[SourceInfo]:
             type="github", name="GitHub profiles",
             description="Developers on GitHub. If their profile links a resume we use it; otherwise we make a short "
                         "profile from their public projects.",
-            parameters={"query": 'e.g. "language:python location:chennai"', "max_results": "1-30"},
+            parameters={"query": 'e.g. "language:python location:chennai"', "max_results": "1-200"},
             configured=True, needs=None if settings.github_token else "A free GitHub token (GITHUB_TOKEN) lets you fetch more profiles per hour.",
             limits="About 25 profiles an hour without a token.",
             terms="Only public profile details are used. Don't sell this data or send people unwanted messages.",
@@ -68,7 +72,7 @@ def catalog() -> list[SourceInfo]:
         SourceInfo(
             type="stackexchange", name="Stack Overflow top answerers",
             description="People who answer the most questions on a topic (for example python), with their public profile.",
-            parameters={"tag": 'e.g. "python"', "site": "stackoverflow", "max_results": "1-30"},
+            parameters={"tag": 'e.g. "python"', "site": "stackoverflow", "max_results": "1-200"},
             configured=True, needs=None if settings.stackexchange_key else "A free key (STACKEXCHANGE_KEY) allows many more searches.",
             limits="About 100 searches a day without a key.",
             terms="Profiles are shared under CC BY-SA, so we keep a link back to each one.",
@@ -78,12 +82,34 @@ def catalog() -> list[SourceInfo]:
             type="url", name="Your own links",
             description="Paste links to resume files (PDF or Word) or to personal websites; we look for a resume "
                         "on the page, otherwise we use the page text.",
-            parameters={"urls": "up to 20 links", "follow_links": True},
-            configured=True, limits="Up to 20 links, files up to 10 MB. We visit each site slowly and respect its rules.",
+            parameters={"urls": "up to 200 links", "follow_links": True},
+            configured=True, limits="Up to 200 links, files up to 5 MB. We visit each site slowly and respect its rules.",
             terms="Only use pages you're allowed to. Most job sites don't allow automatic collection.",
             example={"type": "url", "urls": ["https://example.com/my-resume.pdf"]},
         ),
     ]
+
+
+_LIVECAREER = re.compile(r"^(?:kaggle_[a-z0-9-]+|hf_resumes)_(\d{6,})\.pdf$")
+
+
+async def _skip_known_livecareer(files: list) -> list:
+    """Kaggle and the Hugging Face "opensporks/resumes" set hold the same resumes (same IDs).
+    They have no emails, so drop any ID we already have, from either source or this run."""
+    async with AsyncSessionLocal() as db:
+        names = (await db.execute(
+            select(Document.original_filename).where(Document.source_site.in_(("kaggle", "huggingface")))
+        )).scalars().all()
+    seen = {m.group(1) for n in names if n and (m := _LIVECAREER.match(n))}
+    kept = []
+    for f in files:
+        m = _LIVECAREER.match(f.filename)
+        if m and m.group(1) in seen:
+            continue
+        if m:
+            seen.add(m.group(1))
+        kept.append(f)
+    return kept
 
 
 async def _collect(spec, keyword: Resolved | None = None) -> SourceResult:
@@ -153,6 +179,7 @@ async def _run(batch_id: str, user: CurrentUser, request: SourcingRunRequest) ->
                                    "note": "No resumes were found by the selected sources."})
             return
 
+        files = await _skip_known_livecareer(files)
         uploads = [resume_service.UploadedFile(f.filename, f.data, f.source_site) for f in files]
         async with AsyncSessionLocal() as db:
             result = await resume_service.accept_uploads(db, user, uploads, source_type="sourced",

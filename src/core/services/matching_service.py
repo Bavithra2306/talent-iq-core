@@ -176,7 +176,7 @@ async def start_run(
         user_id=user.id, category=ActionCategory.SHORTLISTING, stage=PipelineStage.CREATED,
         job_id=job_id,
         input_data={"run_id": run_id, "category": job.category,
-                    "similarity_levels": settings.match_similarity_levels},
+                    "strong_similarity": settings.match_strong_similarity},
     )
     task = asyncio.create_task(_run(run_id, user.id, job_id, request))
     _background.add(task)
@@ -246,9 +246,10 @@ async def select_candidates(
 ) -> tuple[list[Pending], int, int, int, float]:
     """Every resume in the job's category, compared with the job.
 
-    Uses the first similarity level (0.75) that at least one resume reaches, falling back
-    to the next ones (0.60, then 0.50). Returns (candidates at or above that level, best
-    first; number considered; number below it; number without a search index yet; level).
+    Takes every resume at the strong level (0.75). When fewer than match_min_strong do, the
+    next most similar resumes are added, never below match_min_similarity, until
+    match_fill_to are taken. Returns (candidates to score, best first; number considered;
+    number left out; number without a search index yet; lowest similarity taken).
     """
     skill_vec, role_vec = job_vectors
     skill_emb, role_emb = aliased(ResumeEmbedding), aliased(ResumeEmbedding)
@@ -277,14 +278,16 @@ async def select_candidates(
         p.similarity = similarity
         indexed.append(p)
 
-    levels = sorted(settings.match_similarity_levels, reverse=True) or [0.75]
-    level, similar = levels[-1], []
-    for level in levels:
-        similar = [p for p in indexed if (p.similarity or 0) >= level]
-        if similar:
-            break
-    similar.sort(key=lambda p: (-(p.similarity or 0), -(_years(p.candidate) or 0)))
-    return similar[:settings.match_max_llm], len(rows), len(indexed) - len(similar), not_indexed, level
+    indexed.sort(key=lambda p: (-(p.similarity or 0), -(_years(p.candidate) or 0)))
+    strong = [p for p in indexed if (p.similarity or 0) >= settings.match_strong_similarity]
+    if len(strong) >= settings.match_min_strong:
+        chosen = strong
+    else:
+        usable = [p for p in indexed if (p.similarity or 0) >= settings.match_min_similarity]
+        chosen = usable[:max(len(strong), settings.match_fill_to)]
+    chosen = chosen[:settings.match_max_llm]
+    lowest = min((p.similarity or 0 for p in chosen), default=settings.match_strong_similarity)
+    return chosen, len(rows), len(indexed) - len(chosen), not_indexed, lowest
 
 
 # ---------- step 2: reuse stored scores ----------

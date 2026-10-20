@@ -52,14 +52,23 @@ async def collect(query: str, max_results: int) -> SourceResult:
     result = SourceResult()
     if "type:" not in query:
         query = f"{query} type:user"  # people only, never company / organisation accounts
+    users: list[dict] = []
+    remaining = 1
     try:
-        search, remaining = await _api(f"/search/users?q={urllib.parse.quote(query)}&per_page={max_results}")
+        for page in range(1, (max_results - 1) // 100 + 2):
+            search, remaining = await _api(
+                f"/search/users?q={urllib.parse.quote(query)}&per_page={min(100, max_results)}&page={page}")
+            items = search.get("items") or []
+            users += items
+            if len(items) < 100 or len(users) >= max_results:
+                break
     except FetchError as exc:
-        result.errors.append(f"GitHub search failed: {exc}")
-        result.partial = True
-        return result
+        if not users:
+            result.errors.append(f"GitHub search failed: {exc}")
+            result.partial = True
+            return result
 
-    for user in (search.get("items") or [])[:max_results]:
+    for user in users[:max_results]:
         login = user["login"]
         if remaining < 3:
             result.partial = True

@@ -37,18 +37,40 @@ async def _about_me_filter() -> str:
     return _filter_id
 
 
+async def _top_answerers(tag: str, site: str, max_results: int) -> tuple[list[dict], dict[int, str]]:
+    """Top answerers of the tag; the API gives at most 20 per tag, so related tags are added
+    (python -> django, pandas, ...) until max_results different people are found."""
+    entries: list[dict] = []
+    tag_of: dict[int, str] = {}
+    tags = [tag]
+    related = await _api(f"/tags/{urllib.parse.quote(tag)}/related", site=site, pagesize=50)
+    tags += [t["name"] for t in related.get("items") or [] if t.get("name") and t["name"] != tag]
+    for name in tags:
+        if len(entries) >= max_results:
+            break
+        top = await _api(f"/tags/{urllib.parse.quote(name)}/top-answerers/all_time", site=site, pagesize=100)
+        for e in top.get("items") or []:
+            uid = e["user"].get("user_id")
+            if uid and uid not in tag_of and e["user"].get("user_type") != "does_not_exist":
+                tag_of[uid] = name
+                entries.append(e)
+    return entries[:max_results], tag_of
+
+
 async def collect(tag: str, site: str, max_results: int) -> SourceResult:
     result = SourceResult()
     try:
-        top = await _api(f"/tags/{urllib.parse.quote(tag)}/top-answerers/all_time",
-                         site=site, pagesize=max_results)
-        entries = top.get("items") or []
+        entries, tag_of = await _top_answerers(tag, site, max_results)
         if not entries:
             result.errors.append(f"No users found for tag '{tag}' on {site}.")
             return result
-        ids = ";".join(str(e["user"]["user_id"]) for e in entries)
-        users = await _api(f"/users/{ids}", site=site, filter=await _about_me_filter(),
-                           pagesize=max_results)
+        ids = [str(e["user"]["user_id"]) for e in entries]
+        users = {"items": []}
+        for i in range(0, len(ids), 100):  # the API takes at most 100 ids per call
+            page = await _api(f"/users/{';'.join(ids[i:i + 100])}", site=site,
+                              filter=await _about_me_filter(), pagesize=100)
+            users["items"] += page.get("items") or []
+            users["quota_remaining"] = page.get("quota_remaining", 100)
     except (FetchError, KeyError, ValueError) as exc:
         result.errors.append(f"Stack Exchange request failed: {exc}")
         result.partial = True
@@ -66,9 +88,9 @@ async def collect(tag: str, site: str, max_results: int) -> SourceResult:
             f"Website: {user.get('website_url')}" if user.get("website_url") else None,
             f"Profile: {user.get('link')}",
             "", "SUMMARY",
-            f"Top answerer on {site} for '{tag}' ({answered.get('post_count', '?')} answers, "
+            f"Top answerer on {site} for '{tag_of.get(user['user_id'], tag)}' ({answered.get('post_count', '?')} answers, "
             f"score {answered.get('score', '?')}); reputation {user.get('reputation')}.",
-            "", "SKILLS", tag,
+            "", "SKILLS", ", ".join(dict.fromkeys([tag_of.get(user["user_id"], tag), tag])),
             "", "ABOUT", about[:3000] or "not provided",
         ]))
         pdf = text_to_pdf(

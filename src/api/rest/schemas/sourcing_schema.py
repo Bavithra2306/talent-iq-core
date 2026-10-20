@@ -8,7 +8,7 @@ class GitHubSource(BaseModel):
     query: str | None = Field(default=None, min_length=2, max_length=200,
                               description='GitHub user search, e.g. "language:python location:chennai"; '
                                           "ignored when the run has a keyword")
-    max_results: int = Field(default=10, ge=1, le=30)
+    max_results: int = Field(default=10, ge=1, le=200)
 
 
 class StackExchangeSource(BaseModel):
@@ -16,25 +16,25 @@ class StackExchangeSource(BaseModel):
     tag: str | None = Field(default=None, min_length=1, max_length=40,
                             description='e.g. "python", "reactjs"; ignored when the run has a keyword')
     site: str = Field(default="stackoverflow", max_length=40)
-    max_results: int = Field(default=10, ge=1, le=30)
+    max_results: int = Field(default=10, ge=1, le=200)
 
 
 class HuggingFaceSource(BaseModel):
     type: Literal["huggingface"] = "huggingface"
     dataset: Literal["opensporks/resumes", "ahmedheakl/resume-atlas"] = "opensporks/resumes"
     category: str | None = Field(default=None, description="e.g. IT, Medical, Finance")
-    max_results: int = Field(default=20, ge=1, le=50)
+    max_results: int = Field(default=20, ge=1, le=200)
 
 
 class KaggleSource(BaseModel):
     type: Literal["kaggle"] = "kaggle"
     category: str | None = None
-    max_results: int = Field(default=20, ge=1, le=50)
+    max_results: int = Field(default=20, ge=1, le=200)
 
 
 class UrlSource(BaseModel):
     type: Literal["url"] = "url"
-    urls: list[HttpUrl] = Field(min_length=1, max_length=20)
+    urls: list[HttpUrl] = Field(min_length=1, max_length=200)
     follow_links: bool = Field(default=True, description="follow resume/CV file links on a page")
 
 

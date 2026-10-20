@@ -3,8 +3,9 @@
     collect -> (nobody similar enough? done) -> read_cache -> score -> finish
 
 * collect: every resume in the job's category; experience and education are scored by
-  code, and each resume's cosine similarity to the job is computed. Only resumes with
-  similarity from the threshold (0.75) up to 1.0 go on.
+  code, and each resume's cosine similarity to the job is computed. Resumes at 0.75 or
+  more go on; if fewer than 10 do, the next most similar (not below 0.50) are added
+  until 20 are taken.
 * read_cache: reuses LLM scores from earlier runs of the same job (same job signature).
 * score: the LLM scores skills and role for the rest; totals use the job's weights and
   every candidate gets plain-language reasons. Nobody is shortlisted automatically.
@@ -73,10 +74,11 @@ async def collect(state: MatchingState, config: RunnableConfig) -> dict:
     progress.below_threshold, progress.not_indexed, progress.threshold = below, not_indexed, level
     counts = {"considered": considered, "below_threshold": below, "not_indexed": not_indexed,
               "threshold": level}
-    top_level = max(settings.match_similarity_levels or [level])
-    if pool and level < top_level:
-        counts["note"] = (f"No resume reached {round(top_level * 100)}% similarity, so resumes from "
-                          f"{round(level * 100)}% were scored.")
+    strong = sum(1 for p in pool if (p.similarity or 0) >= settings.match_strong_similarity)
+    if pool and strong < len(pool):
+        counts["note"] = (f"{strong} strong match(es) at {round(settings.match_strong_similarity * 100)}% or more; "
+                          f"{len(pool) - strong} more added with lower similarity (down to {round(level * 100)}%).")
+    counts["strong"] = strong
     if not pool:
         await svc.unrank_all(db, state["job_id"])
         await db.commit()
