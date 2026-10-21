@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,8 +16,8 @@ class Job(IdMixin, AuditMixin, Base):
         Uuid, ForeignKey("documents.id"), nullable=False
     )
     title: Mapped[str] = mapped_column(String, nullable=False)
-    # A few plain sentences: what the person will do (from the JD, editable).
-    about_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Short role / designation, e.g. "SDE II" (from the JD, editable).
+    role_name: Mapped[str | None] = mapped_column(String, nullable=True)
     category: Mapped[str | None] = mapped_column(String, nullable=True)
     industry: Mapped[str | None] = mapped_column(String, nullable=True)
     experience_years: Mapped[int | None] = mapped_column(Integer, nullable=True)

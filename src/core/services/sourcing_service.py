@@ -112,6 +112,25 @@ async def _skip_known_livecareer(files: list) -> list:
     return kept
 
 
+_PROFILE_NAMES = {
+    # github_<login>.pdf (made from the profile) or github_<login>_resume.pdf (their own file)
+    "github": re.compile(r"^github_(.+?)(?:_resume)?\.pdf$"),
+    # stackexchange_<site>_<user id>.pdf
+    "stackexchange": re.compile(r"^stackexchange_[a-z.]+_(\d+)\.pdf$"),
+}
+
+
+async def _known_ids(source: str) -> set[str]:
+    """GitHub logins / Stack Exchange user ids we already have, so a new run skips them.
+    (Their profile PDFs are rebuilt each time, so the file itself never looks like a duplicate.)"""
+    pattern = _PROFILE_NAMES[source]
+    async with AsyncSessionLocal() as db:
+        names = (await db.execute(
+            select(Document.original_filename).where(Document.source_site == source)
+        )).scalars().all()
+    return {m.group(1) for n in names if n and (m := pattern.match(n))}
+
+
 async def _collect(spec, keyword: Resolved | None = None) -> SourceResult:
     """Run one source. With a keyword, it replaces the source's own search fields."""
     note = keyword.notes.get(spec.type) if keyword else None
@@ -119,12 +138,13 @@ async def _collect(spec, keyword: Resolved | None = None) -> SourceResult:
         query = keyword.github_query if keyword else spec.query
         if not query:
             return SourceResult(errors=[note or "Enter a GitHub search or a keyword."])
-        result = await github.collect(query, spec.max_results)
+        result = await github.collect(query, spec.max_results, skip=await _known_ids("github"))
     elif spec.type == "stackexchange":
         tag = keyword.stack_tag if keyword else spec.tag
         if not tag:
             return SourceResult(errors=[note or "Enter a tag or a keyword."])
-        result = await stackexchange.collect(tag, spec.site, spec.max_results)
+        known = {int(i) for i in await _known_ids("stackexchange") if i.isdigit()}
+        result = await stackexchange.collect(tag, spec.site, spec.max_results, skip=known)
     elif spec.type == "huggingface":
         result = await huggingface.collect(spec.dataset, keyword.category if keyword else spec.category,
                                            spec.max_results)
@@ -132,7 +152,7 @@ async def _collect(spec, keyword: Resolved | None = None) -> SourceResult:
         result = await kaggle.collect(keyword.category if keyword else spec.category, spec.max_results)
     else:
         return await url.collect([str(u) for u in spec.urls], spec.follow_links)
-    result.note = note
+    result.note = " ".join(filter(None, [note, result.note])) or None
     return result
 
 

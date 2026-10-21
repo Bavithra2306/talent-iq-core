@@ -37,11 +37,13 @@ async def _about_me_filter() -> str:
     return _filter_id
 
 
-async def _top_answerers(tag: str, site: str, max_results: int) -> tuple[list[dict], dict[int, str]]:
+async def _top_answerers(tag: str, site: str, max_results: int,
+                         skip: set[int]) -> tuple[list[dict], dict[int, str], int]:
     """Top answerers of the tag; the API gives at most 20 per tag, so related tags are added
     (python -> django, pandas, ...) until max_results different people are found."""
     entries: list[dict] = []
     tag_of: dict[int, str] = {}
+    skipped: set[int] = set()
     tags = [tag]
     related = await _api(f"/tags/{urllib.parse.quote(tag)}/related", site=site, pagesize=50)
     tags += [t["name"] for t in related.get("items") or [] if t.get("name") and t["name"] != tag]
@@ -51,16 +53,23 @@ async def _top_answerers(tag: str, site: str, max_results: int) -> tuple[list[di
         top = await _api(f"/tags/{urllib.parse.quote(name)}/top-answerers/all_time", site=site, pagesize=100)
         for e in top.get("items") or []:
             uid = e["user"].get("user_id")
+            if uid in skip:
+                skipped.add(uid)
+                continue
             if uid and uid not in tag_of and e["user"].get("user_type") != "does_not_exist":
                 tag_of[uid] = name
                 entries.append(e)
-    return entries[:max_results], tag_of
+    return entries[:max_results], tag_of, len(skipped)
 
 
-async def collect(tag: str, site: str, max_results: int) -> SourceResult:
+async def collect(tag: str, site: str, max_results: int, skip: set[int] | None = None) -> SourceResult:
+    """Top answerers of the tag (and related tags). User ids in ``skip`` are already in the
+    resumes; the search moves on to other people instead."""
     result = SourceResult()
     try:
-        entries, tag_of = await _top_answerers(tag, site, max_results)
+        entries, tag_of, skipped = await _top_answerers(tag, site, max_results, skip or set())
+        if skipped:
+            result.note = f"{skipped} profile(s) already in your resumes were skipped."
         if not entries:
             result.errors.append(f"No users found for tag '{tag}' on {site}.")
             return result

@@ -48,18 +48,25 @@ def _resume_links(readme: str, blog: str | None) -> list[str]:
     return found[:2]
 
 
-async def collect(query: str, max_results: int) -> SourceResult:
+async def collect(query: str, max_results: int, skip: set[str] | None = None) -> SourceResult:
+    """Profiles for the search. Logins in ``skip`` (already in the resumes) are passed over and
+    the search pages on, so a run brings people we don't have yet."""
     result = SourceResult()
+    skip = {s.lower() for s in (skip or set())}
     if "type:" not in query:
         query = f"{query} type:user"  # people only, never company / organisation accounts
     users: list[dict] = []
-    remaining = 1
+    remaining, skipped = 1, 0
     try:
-        for page in range(1, (max_results - 1) // 100 + 2):
+        for page in range(1, 11):  # GitHub search gives at most 1,000 results
             search, remaining = await _api(
-                f"/search/users?q={urllib.parse.quote(query)}&per_page={min(100, max_results)}&page={page}")
+                f"/search/users?q={urllib.parse.quote(query)}&per_page=100&page={page}")
             items = search.get("items") or []
-            users += items
+            for item in items:
+                if item["login"].lower() in skip:
+                    skipped += 1
+                else:
+                    users.append(item)
             if len(items) < 100 or len(users) >= max_results:
                 break
     except FetchError as exc:
@@ -68,6 +75,8 @@ async def collect(query: str, max_results: int) -> SourceResult:
             result.partial = True
             return result
 
+    if skipped:
+        result.note = f"{skipped} profile(s) already in your resumes were skipped."
     for user in users[:max_results]:
         login = user["login"]
         if remaining < 3:

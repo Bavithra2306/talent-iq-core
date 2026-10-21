@@ -99,13 +99,8 @@ def render_jd_pdf(data: JobCreate) -> bytes:
     _write(pdf, 10, data.title)
     pdf.ln(2)
 
-    if data.about_role:
-        pdf.set_font("Helvetica", "B", 11)
-        _write(pdf, 7, "About the role:")
-        pdf.set_font("Helvetica", "", 11)
-        _write(pdf, 7, data.about_role)
-        pdf.ln(2)
     rows = [
+        ("Role", data.role_name),
         ("Category", data.category),
         ("Industry", data.industry),
         ("Experience", f"{data.experience_years}+ years" if data.experience_years is not None else None),
@@ -315,7 +310,7 @@ async def create_job(
     job = Job(
         jd_id=jd_id,
         title=data.title.strip(),
-        about_role=(data.about_role or "").strip() or None,
+        role_name=(data.role_name or "").strip() or None,
         category=data.category,
         industry=data.industry,
         experience_years=data.experience_years,
