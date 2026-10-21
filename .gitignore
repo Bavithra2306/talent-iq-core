@@ -1,5 +1,7 @@
 # secrets
 .env
+secrets/
+*.json.key
 *.key
 
 # resume files and storage (real candidate data)
@@ -22,3 +24,6 @@ venv/
 
 # editor settings
 .vscode/
+
+# Docling models copied from an image (1.4 GB, rebuilt on demand)
+docling-models/

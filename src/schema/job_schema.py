@@ -8,6 +8,7 @@ from src.schema.base import AuditRead
 
 class JobBase(BaseModel):
     title: str = Field(min_length=1)
+    about_role: str | None = Field(default=None, max_length=3000, description="what the person will do")
     category: str | None = None
     industry: str | None = None
     experience_years: int | None = Field(default=None, ge=0)
@@ -27,6 +28,7 @@ class JobCreate(JobBase):
 
 class JobUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1)
+    about_role: str | None = Field(default=None, max_length=3000)
     category: str | None = None
     industry: str | None = None
     experience_years: int | None = Field(default=None, ge=0)

@@ -11,6 +11,7 @@ class JobDraft(BaseModel):
     """Fields extracted by the LLM from a JD; every field may be missing."""
 
     title: str | None = None
+    about_role: str | None = None
     category: str | None = None
     industry: str | None = None
     experience_years: int | None = Field(default=None, ge=0)

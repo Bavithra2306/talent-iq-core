@@ -103,10 +103,12 @@ class Settings(BaseSettings):
     pool_min: int = 30  # ... but at least this many
     pool_max: int = 100  # ... and at most this many
 
-    # File storage: "local" now, "gcs" later (falls back to local on error).
+    # File storage: "gcs" = Google Cloud Storage bucket as the main store plus a local copy
+    # (also the fallback); "local" = local folder only.
     storage_backend: str = "local"
     local_storage_dir: str = "storage"
     gcs_bucket: str | None = None
+    gcs_credentials_file: str | None = None  # service-account key JSON, e.g. /app/secrets/gcs-key.json
     max_upload_bytes: int = 5 * 1024 * 1024  # one resume file
     max_upload_total_bytes: int = 350 * 1024 * 1024  # a whole upload, or a zip once unpacked
     max_jd_bytes: int = 10 * 1024 * 1024  # one JD file

@@ -19,6 +19,8 @@ Step 1 - classify the document:
 
 Step 2 - if it is a "jd", extract these fields into "job" (otherwise set "job" to null):
 - title: the job title, e.g. "Senior Python Developer".
+- about_role: 2-4 plain sentences on what the person will do: the purpose of the role and the
+  main responsibilities, written for a recruiter. Use only what the document says.
 - category: the broad field of work. Prefer one of: {categories}.
   If none fits, give your own short name (1-3 words). Any field is allowed.
 - industry: the employer's industry if stated or obvious, e.g. "Software", "Hospital".

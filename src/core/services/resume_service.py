@@ -30,6 +30,7 @@ from src.constants.enums import (
     CandidateStatus,
     EmbeddingKind,
     FileType,
+    JobStatus,
     PipelineStage,
 )
 from src.control.agents.prompts import resume_check as check_prompt
@@ -41,6 +42,7 @@ from src.data.clients.postgres import AsyncSessionLocal
 from src.data.clients.storage import storage
 from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.document import Document
+from src.data.models.postgres.job import Job
 from src.data.models.postgres.resume_embedding import ResumeEmbedding
 from src.data.models.postgres.resume_extraction import ResumeExtraction
 from src.handlers.http_clients import embedding_client
@@ -533,15 +535,22 @@ async def embed_missing(rounds: int = 3, chunk_resumes: int = 25, pause_seconds:
     """
     async with AsyncSessionLocal() as db:
         rows = (await db.execute(
-            select(Candidate.id, ResumeExtraction)
+            select(Candidate.id, Candidate.category, ResumeExtraction)
             .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
             .where(~select(ResumeEmbedding.id)
                    .where(ResumeEmbedding.resume_id == ResumeExtraction.resume_id)
                    .exists())
+            .order_by(Candidate.created_at)
         )).all()
+        # Categories that have an open job are made searchable first: the free daily
+        # quota goes to resumes that can be matched today.
+        open_categories = set((await db.execute(
+            select(Job.category).where(Job.status == JobStatus.OPEN, Job.deleted_at.is_(None))
+        )).scalars())
+    rows = sorted(rows, key=lambda r: r[1] not in open_categories)  # stable: oldest first within each group
 
     work = []  # (candidate_id, resume_id, skills text, roles text)
-    for candidate_id, extraction in rows:
+    for candidate_id, _category, extraction in rows:
         skills = ", ".join(clean_skills(extraction.skills or []))
         roles = _roles_text(extraction)
         if skills or roles:

@@ -23,6 +23,7 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
     "langgraph>=1.2.16",
     "mammoth>=1.13.0",
+    "google-cloud-storage>=3.17.1",
 ]
 
 # CPU-only PyTorch for Docling (avoids multi-GB CUDA wheels in the image)
