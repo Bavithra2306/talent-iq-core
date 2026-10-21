@@ -38,7 +38,7 @@ async def refresh_job_embedding(db: AsyncSession, job: Job, user_id: uuid.UUID |
     else:
         row.updated_by = user_id
     for column in texts:
-        setattr(row, column, dict(zip(present, vectors)).get(column))
+        setattr(row, column, dict(zip(present, vectors, strict=False)).get(column))
     row.model_version = 1  # 1 = gemini-embedding-001 at 768 dimensions
     await db.commit()
     return True

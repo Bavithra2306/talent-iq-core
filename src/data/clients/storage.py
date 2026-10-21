@@ -1,12 +1,12 @@
-"""File storage: Google Cloud Storage as the main store, local disk as the fallback.
+"""File storage: Google Cloud Storage as the main store, local disk only as the fallback.
 
 Keys are relative paths such as "resumes/<uuid>_<name>.pdf"; the same key is used in the
-bucket and under the local folder, so the two always line up.
+bucket and under the local folder, so a file can live in either place.
 
-* save:   to GCS (when configured) and always a local copy, so the files can also be
-          browsed on the machine (C:\\Development\\TalentIq\\storage in development).
-          If GCS fails, the local copy is enough and the error is logged.
-* read:   from GCS first; if GCS is not configured or fails, from the local copy.
+* save:   to GCS when it is configured. Only if GCS fails (or is not configured) does the
+          file go to the local folder instead (./storage on the development machine).
+* read:   from the local folder when the file is there (saved during a GCS outage),
+          otherwise from GCS.
 * delete: from both.
 
 GCS is used when STORAGE_BACKEND=gcs and GCS_BUCKET is set. Credentials come from the
@@ -89,7 +89,7 @@ class GcsStorage:
 
 
 class StorageService:
-    """GCS first, local disk as the copy and the fallback."""
+    """GCS first; the local folder only when GCS is not configured or fails."""
 
     def __init__(self):
         self.local = LocalStorage(settings.local_storage_dir)
@@ -98,26 +98,24 @@ class StorageService:
 
     @property
     def backend(self) -> str:
-        return f"gcs:{settings.gcs_bucket} + local copy" if self.gcs else "local"
+        return f"gcs:{settings.gcs_bucket} (local fallback)" if self.gcs else "local"
 
     def save(self, folder: str, original_filename: str, data: bytes) -> tuple[str, str]:
         """Store bytes; returns (stored_filename, storage key)."""
         stored_filename = make_stored_filename(original_filename)
         key = f"{folder}/{stored_filename}"
-        self.local.save(key, data)
         if self.gcs:
             try:
                 self.gcs.save(key, data)
+                return stored_filename, key
             except Exception:
-                logger.exception("GCS upload failed for %s; kept the local copy", key)
+                logger.exception("GCS upload failed for %s; saving it locally instead", key)
+        self.local.save(key, data)
         return stored_filename, key
 
     def read(self, key: str) -> bytes:
-        if self.gcs:
-            try:
-                return self.gcs.read(key)
-            except Exception as exc:
-                logger.warning("GCS read failed for %s (%s); using the local copy", key, type(exc).__name__)
+        if self.gcs and not self.local.exists(key):
+            return self.gcs.read(key)
         return self.local.read(key)
 
     def delete(self, key: str) -> None:
@@ -129,8 +127,8 @@ class StorageService:
                 logger.exception("GCS delete failed for %s", key)
 
     def sync_local_to_gcs(self) -> tuple[int, int]:
-        """Upload local files that are missing in the bucket (e.g. after turning GCS on).
-        Returns (uploaded, already there)."""
+        """Upload local files that are missing in the bucket (e.g. after turning GCS on, or
+        after an outage). Returns (uploaded, already there)."""
         if not self.gcs:
             raise RuntimeError("GCS is not configured (STORAGE_BACKEND=gcs and GCS_BUCKET).")
         uploaded = present = 0

@@ -7,7 +7,7 @@ transaction is rolled back.
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.data.clients.postgres import AsyncSessionLocal
@@ -18,7 +18,7 @@ logger = logging.getLogger("talentiq.audit")
 
 def utcnow() -> datetime:
     """Naive UTC timestamp (audit_logs uses timestamp without time zone)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _to_text(value) -> str | None:

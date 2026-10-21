@@ -89,8 +89,10 @@ class Pending:
     nice: list[dict] | None = None
     role: dict | None = None  # {"level", "matched_role"}
     from_cache: bool = False
-    old_explanation: dict | None = None
     similarity: float | None = None  # combined cosine similarity to the job (0..1)
+    summary: str | None = None  # written by the LLM in the scoring call
+    strengths: list[str] = field(default_factory=list)
+    gaps: list[str] = field(default_factory=list)
 
 
 # ---------- small helpers ----------
@@ -117,11 +119,10 @@ def _avg(entries: list[dict]) -> float | None:
     return round(sum(e["level"] for e in entries) / len(entries), 2) if entries else None
 
 
-def skill_score(required: list[dict], nice: list[dict]) -> float:
-    """Required skills average; nice-to-have skills can add up to 10% of the score."""
-    required_avg = _avg(required) or 0.0
-    nice_avg = _avg(nice)
-    return round(required_avg if nice_avg is None else 0.9 * required_avg + 0.1 * nice_avg, 2)
+def skill_score(required: list[dict]) -> float:
+    """Average level of the required skills (a missing skill counts as 0). Nice-to-have
+    skills are only mentioned in the explanation; they never change the score."""
+    return _avg(required) or 0.0
 
 
 def _years(candidate: Candidate) -> float | None:
@@ -304,30 +305,37 @@ async def apply_cache(db: AsyncSession, job: Job, pool: list[Pending], signature
         row = by_candidate.get(p.candidate.id)
         if row is None:
             continue
-        p.old_explanation = row.explanation
         data = row.explanation or {}
         if (row.resume_id == p.candidate.current_resume_id and data.get("job_signature") == signature
-                and data.get("skills") and data.get("role")):
+                and data.get("skills") and data.get("role") and data.get("summary")):
             p.required = data["skills"]["required"]
             p.nice = data["skills"]["nice"]
             p.role = data["role"]
+            p.summary, p.strengths, p.gaps = data["summary"], data.get("strengths", []), data.get("gaps", [])
             p.from_cache = True
 
 
 # ---------- step 3: LLM scoring ----------
 
-def _candidate_prompt_data(p: Pending) -> dict:
+def _candidate_prompt_data(job: Job, p: Pending) -> dict:
+    """What the LLM sees: titles, roles and skills plus the code-computed facts it explains.
+    No name, contact or other personal details."""
+    _, exp_note = scoring_rules.experience_score(_years(p.candidate), job.experience_years)
+    _, edu_note = scoring_rules.education_score(p.extraction.education, job.education)
     return {
         "current_title": p.candidate.current_title,
         "roles": _role_lines(p.extraction),
         "skills": (p.extraction.skills or [])[:40],
+        "similarity": None if p.similarity is None else round(p.similarity * 100),
+        "experience": exp_note,
+        "education": edu_note,
     }
 
 
 def _apply_result(job: Job, p: Pending, result: match_scoring.CandidateMatch) -> None:
     expected = list(job.skills or []) + list(job.nice_to_have_skills or [])
     if len(result.skills) == len(expected):
-        by_position = list(zip(expected, result.skills))
+        by_position = list(zip(expected, result.skills, strict=False))
     else:  # the model dropped or added entries: match by name, missing = 0
         named = {s.jd_skill.strip().lower(): s for s in result.skills}
         by_position = [(name, named.get(name.lower(), match_scoring.SkillMatch())) for name in expected]
@@ -337,6 +345,9 @@ def _apply_result(job: Job, p: Pending, result: match_scoring.CandidateMatch) ->
     p.required, p.nice = entries[:split], entries[split:]
     p.role = {"level": result.role.level,
               "matched_role": result.role.matched_role if result.role.level else None}
+    p.summary = result.summary.strip() or None
+    p.strengths = [s.strip() for s in result.strengths if s.strip()][:3]
+    p.gaps = [s.strip() for s in result.gaps if s.strip()][:3]
 
 
 async def _score_group(job: Job, group: list[Pending]) -> list[Pending]:
@@ -344,12 +355,12 @@ async def _score_group(job: Job, group: list[Pending]) -> list[Pending]:
     user = match_scoring.build_user_prompt(
         title=job.title, category=job.category, required=list(job.skills or []),
         nice=list(job.nice_to_have_skills or []),
-        candidates=[_candidate_prompt_data(p) for p in group],
+        candidates=[_candidate_prompt_data(job, p) for p in group],
     )
     try:
         batch = await llm.chat_json(
             system=match_scoring.SYSTEM_PROMPT, user=user, response_model=match_scoring.MatchBatch,
-            max_tokens=min(12000, 1500 * len(group) + 500),
+            max_tokens=min(16000, 1900 * len(group) + 500),
         )
     except LLMError:
         return list(group)
@@ -400,7 +411,7 @@ def _reason(p: Pending, exp_note: str, edu_note: str) -> list[str]:
     nice = p.nice or []
     if nice:
         have = [i["jd_skill"] for i in nice if i["level"] >= 75]
-        lines.append(f"Nice-to-have: {len(have)} of {len(nice)}" + (f" ({', '.join(have)})" if have else ""))
+        lines.append(f"Nice-to-have (not scored): {len(have)} of {len(nice)}" + (f" ({', '.join(have)})" if have else ""))
     if p.role:
         level = int(p.role.get("level") or 0)
         words = _ROLE_WORDS.get(level, f"role match {level}/100")
@@ -416,8 +427,6 @@ def _reason(p: Pending, exp_note: str, edu_note: str) -> list[str]:
 def _explanation_dict(job: Job, p: Pending, signature: str) -> dict:
     exp_score, exp_note = scoring_rules.experience_score(_years(p.candidate), job.experience_years)
     edu_score, edu_note = scoring_rules.education_score(p.extraction.education, job.education)
-    old = p.old_explanation or {}
-    same_job = old.get("job_signature") == signature
     if p.similarity is None:
         p.similarity = combined_similarity(p.sim_skill, p.sim_role)
     return {
@@ -426,17 +435,16 @@ def _explanation_dict(job: Job, p: Pending, signature: str) -> dict:
         "reason": _reason(p, exp_note, edu_note),
         "cosine": {"skills": None if p.sim_skill is None else round(float(p.sim_skill), 4),
                    "role": None if p.sim_role is None else round(float(p.sim_role), 4)},
-        "skills": {"required": p.required, "nice": p.nice,
-                   "required_avg": _avg(p.required), "nice_avg": _avg(p.nice)},
+        "skills": {"required": p.required, "nice": p.nice, "required_avg": _avg(p.required)},
         "role": p.role,
         "experience": {"candidate_years": _years(p.candidate), "required_years": job.experience_years,
                        "score": exp_score, "note": exp_note},
         "education": {"required": job.education, "score": edu_score, "note": edu_note},
-        # Keep an earlier narrative only while it still describes the same job.
-        "summary": old.get("summary") if same_job else None,
-        "strengths": old.get("strengths", []) if same_job else [],
-        "gaps": old.get("gaps", []) if same_job else [],
-        "explained_total": old.get("explained_total") if same_job else None,
+        # Written by the LLM with the skill and role levels; it quotes no numbers, so it
+        # stays true when the recruiter changes the weights.
+        "summary": p.summary,
+        "strengths": p.strengths,
+        "gaps": p.gaps,
     }
 
 
@@ -452,7 +460,7 @@ async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[P
     entries = []
     for p in scored:
         explanation = _explanation_dict(job, p, signature)
-        skills = skill_score(p.required, p.nice)
+        skills = skill_score(p.required)
         role = float(p.role["level"])
         exp = explanation["experience"]["score"]
         edu = explanation["education"]["score"]
@@ -540,9 +548,8 @@ def _facts(row: MatchingShortlisting, candidate: Candidate, weights: Weights) ->
 async def generate_explanations(
     db: AsyncSession, job: Job, rows: list[MatchingShortlisting], weights: Weights
 ) -> None:
-    """Write a narrative for rows whose explanation is missing or no longer matches their total."""
-    needed = [r for r in rows if r.explanation and (
-        not r.explanation.get("summary") or r.explanation.get("explained_total") != float(r.total_score))]
+    """Fallback: write a narrative for rows the scoring call left without one."""
+    needed = [r for r in rows if r.explanation and not r.explanation.get("summary")]
     if not needed:
         return
     candidates = {c.id: c for c in (await db.execute(
@@ -572,5 +579,5 @@ async def generate_explanations(
                 continue
             updated = dict(row.explanation)
             updated.update(summary=result.summary.strip(), strengths=result.strengths[:3],
-                           gaps=result.gaps[:3], explained_total=float(row.total_score))
+                           gaps=result.gaps[:3])
             row.explanation = updated  # new dict so the JSON change is tracked

@@ -9,7 +9,7 @@ import logging
 import math
 import random
 import re
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import openai
@@ -52,7 +52,7 @@ def _quota_today() -> date:
 def next_reset() -> datetime:
     """Next quota reset (midnight in the quota time zone), as a UTC datetime."""
     tomorrow = _quota_today() + timedelta(days=1)
-    return datetime.combine(tomorrow, time(0), QUOTA_TZ).astimezone(timezone.utc)
+    return datetime.combine(tomorrow, time(0), QUOTA_TZ).astimezone(UTC)
 
 
 def format_time(moment: datetime) -> str:
@@ -80,7 +80,7 @@ async def _used_today_from_db() -> int:
 
 async def quota_status() -> dict:
     used = max(_sent.get(_quota_today(), 0), await _used_today_from_db())
-    paused = _paused_until is not None and datetime.now(timezone.utc) < _paused_until
+    paused = _paused_until is not None and datetime.now(UTC) < _paused_until
     return {
         "daily_limit": settings.embedding_daily_limit,
         "used_today": used,
@@ -94,7 +94,7 @@ async def _reserve(count: int) -> None:
     """Raise EmbeddingQuotaExceeded instead of sending a request that can't succeed today."""
     global _paused_until
     async with _budget_lock:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         if _paused_until is not None and now < _paused_until:
             raise EmbeddingQuotaExceeded(_paused_until)
         today = _quota_today()
@@ -162,7 +162,7 @@ async def _embed_batch(texts: list[str], attempts: int = 4) -> list[list[float]]
             delay = _retry_delay_seconds(str(exc))
             if delay is not None and delay > 120:
                 # A daily quota, not a per-minute one: retrying now only wastes time.
-                _paused_until = datetime.now(timezone.utc) + timedelta(seconds=delay)
+                _paused_until = datetime.now(UTC) + timedelta(seconds=delay)
                 logger.warning("embedding daily quota reached; paused until %s", format_time(_paused_until))
                 raise EmbeddingQuotaExceeded(_paused_until) from exc
             last = exc

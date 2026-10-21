@@ -1,14 +1,14 @@
 """Turning sourced text (profiles, dataset rows, web pages) into documents for ingestion."""
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 
 from fpdf import FPDF
 
 # A fixed creation date makes identical text produce identical bytes, so the
 # ingestion pipeline's SHA-256 check skips profiles that were already sourced.
-_FIXED_DATE = datetime(2000, 1, 1, tzinfo=timezone.utc)
+_FIXED_DATE = datetime(2000, 1, 1, tzinfo=UTC)
 
 
 def _latin1(text: str) -> str:

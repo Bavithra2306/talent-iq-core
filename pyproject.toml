@@ -35,3 +35,29 @@ explicit = true
 [tool.uv.sources]
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.1",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+extend-exclude = ["src/data/migrations", "docling-models"]
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle errors, import order, bugbear, modern-python upgrades
+select = ["F", "E", "I", "B", "UP"]
+ignore = [
+    "B008",   # FastAPI's Depends()/Query() defaults
+    "E501",   # long lines: some prompts and SQL read better unbroken
+    "UP042",  # keep (str, Enum): StrEnum changes str() output used in stored values
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]

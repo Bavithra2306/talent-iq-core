@@ -82,7 +82,7 @@ async def collect(dataset: str, category: str | None, max_results: int) -> Sourc
         result.partial = True
         return result
 
-    for row_idx, rows_or_error in zip(picks, rows):
+    for row_idx, rows_or_error in zip(picks, rows, strict=False):
         if isinstance(rows_or_error, Exception) or not rows_or_error:
             result.partial = True
             result.errors.append(f"row {row_idx}: could not be fetched")

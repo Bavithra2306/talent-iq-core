@@ -43,7 +43,7 @@ def get_current_user(access_token: str | None = Cookie(default=None)) -> Current
     except (InvalidTokenError, ValueError, KeyError):
         # Tokens issued before the role claim existed also land here; the
         # frontend's refresh flow gets a new token with the role.
-        raise HTTPException(
+        raise HTTPException(  # noqa: B904 - the token error itself is not useful to callers
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Access token is invalid or expired. Please log in again.",
         )

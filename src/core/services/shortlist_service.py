@@ -56,9 +56,6 @@ def _entry(row: MatchingShortlisting, candidate: Candidate, skills: list[str] | 
         breakdown = scoring_rules.breakdown(scores.skills, scores.role, scores.experience,
                                             scores.education, weights)
     explanation = row.explanation
-    if explanation and explanation.get("explained_total") is not None and total is not None \
-            and abs(explanation["explained_total"] - total) > 0.005:
-        explanation = {**explanation, "stale": True}  # the text describes an older total
     return ShortlistEntry(
         id=row.id, job_id=row.job_id, candidate_id=row.candidate_id, resume_id=row.resume_id,
         name=candidate.name, email=candidate.email, contact=candidate.contact,
@@ -191,7 +188,6 @@ async def apply_weights(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, 
         .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
         .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.rank.is_not(None))
     )).all())
-    shortlisted_ids = [r.id for r, _ in rows if r.status == CandidateStatus.SHORTLISTED]
     ranked = []
     for row, candidate in rows:
         row.total_score = scoring_rules.total_score(
@@ -204,9 +200,6 @@ async def apply_weights(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, 
     for position, (row, _) in enumerate(ranked, start=1):
         row.rank = position
     await db.commit()
-
-    if shortlisted_ids:
-        _explain_later(job_id, shortlisted_ids, weights)
     return weights
 
 
@@ -217,7 +210,7 @@ def _explain_later(job_id: uuid.UUID, row_ids: list[uuid.UUID], weights: Weights
 
 
 async def _write_explanations(job_id: uuid.UUID, row_ids: list[uuid.UUID], weights: Weights) -> None:
-    """AI-written summary, strengths and gaps for shortlisted candidates (best effort)."""
+    """Fallback AI summary for shortlisted candidates the scoring call left without one (best effort)."""
     try:
         async with AsyncSessionLocal() as db:
             job = await db.get(Job, job_id)

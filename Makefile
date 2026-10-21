@@ -14,3 +14,12 @@ check:
 
 revision:
 	$(COMPOSE) run --rm core uv run --no-sync alembic revision --autogenerate -m "$(m)"
+
+# Before every commit / deployment: lint, then the unit tests (run on this machine).
+lint:
+	uv run ruff check src tests
+
+test:
+	uv run pytest -q
+
+check-all: lint test

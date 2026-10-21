@@ -64,7 +64,6 @@ _SYNONYMS = {
     # categories used by the public LiveCareer resume datasets (Kaggle / Hugging Face)
     "information-technology": "IT",
     "accountant": "Finance",
-    "banking": "Finance",
     "advocate": "Legal",
     "teacher": "Education",
     "chef": "Hospitality",

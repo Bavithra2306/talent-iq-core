@@ -121,7 +121,7 @@ class LLMClient:
         """Gemini lane for the stronger model used for explanations."""
         if not settings.gemini_api_key:
             return None
-        base = next((l for l in self.lanes if l.provider == "gemini"), None)
+        base = next((ln for ln in self.lanes if ln.provider == "gemini"), None)
         if base is None:
             return None
         for lane in self.lanes:
@@ -137,7 +137,7 @@ class LLMClient:
             async with self._lock:
                 now = time.monotonic()
                 waits = [lane.wait_time(now) for lane in candidates]
-                for lane, wait in zip(candidates, waits):
+                for lane, wait in zip(candidates, waits, strict=False):
                     if wait == 0:  # first free lane in priority order
                         lane.reserve(now)
                         return lane
@@ -165,12 +165,12 @@ class LLMClient:
         deadline = time.monotonic() + max_wait_seconds
         candidates = list(self.lanes)
         if strong and (lane := self.strong_lane()):
-            candidates = [lane] + [l for l in candidates if l is not lane]
+            candidates = [lane] + [ln for ln in candidates if ln is not lane]
         tried: set[str] = set()
         last_error: Exception | None = None
 
         for _ in range(len(candidates) * 2):
-            pool = [l for l in candidates if l.name not in tried] or candidates
+            pool = [ln for ln in candidates if ln.name not in tried] or candidates
             lane = await self._reserve_lane(pool, deadline)
             try:
                 async with self._semaphore:

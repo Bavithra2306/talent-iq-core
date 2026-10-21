@@ -312,7 +312,7 @@ async def check_documents(texts: list[str]) -> list[str | None]:
 
     async def run(start: int) -> None:
         chunk = texts[start:start + size]
-        for attempt in range(2):
+        for _attempt in range(2):
             try:
                 found = await _check_group(chunk)
             except LLMError:

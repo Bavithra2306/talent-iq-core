@@ -4,7 +4,7 @@ import csv
 import io
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from sqlalchemy import select
@@ -122,7 +122,7 @@ def _xlsx(table: list[list], job: Job, weights: dict, scope: str, exported_by: s
         ("Weights", f"skills {weights['skill_pct']}%, role {weights['role_pct']}%, "
                     f"experience {weights['exp_pct']}%, education {weights['edu_pct']}%"),
         ("Rows", f"{len(table)} ({scope})"), ("Exported by", exported_by),
-        ("Exported at", datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        ("Exported at", datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")),
         ("Scores", "Each component is 0-100; total = weighted sum. Skill levels: 100 exact, "
                    "75 strongly related, 50 partly related, 0 missing."),
     ]
@@ -164,5 +164,5 @@ async def export_shortlist(db: AsyncSession, user: CurrentUser, job_id: uuid.UUI
                     output_data={"rows": len(table), "bytes": len(content)}, start_time=started)
 
     slug = re.sub(r"[^A-Za-z0-9]+", "_", job.title).strip("_")[:50] or "job"
-    filename = f"{slug}_shortlist_{datetime.now(timezone.utc):%Y%m%d}.{fmt}"
+    filename = f"{slug}_shortlist_{datetime.now(UTC):%Y%m%d}.{fmt}"
     return content, media, filename

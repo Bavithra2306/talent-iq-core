@@ -1,4 +1,4 @@
-"""LLM step 4: explain why each shortlisted candidate matched and why the score is what it is.
+"""Fallback explanation: used only when the scoring call left a candidate without one.
 
 All numbers come from code; the LLM only turns them into a readable explanation, so it
 cannot change a score.
@@ -8,11 +8,12 @@ from pydantic import BaseModel, Field
 
 SYSTEM_PROMPT = """You write short, factual hiring explanations for recruiters.
 
-For each candidate you get the job, the candidate's facts and a computed score breakdown. Explain WHY the candidate matches the job and WHY the total score is what it is.
+For each candidate you get the job, the candidate's facts and a computed score breakdown. Explain WHY the candidate matches the job and what holds the score down.
 
 Rules:
-- Use only the facts provided. Never invent skills, employers or numbers. Quote the given scores as they are.
-- "summary": 2-3 sentences that cover skills, role, experience and education, and say what drives the total score up or down.
+- Use only the facts provided. Never invent skills, employers or numbers. Do not write any score or percentage numbers.
+- Nice-to-have skills never change the score; mention the ones the candidate has.
+- "summary": 2-3 sentences that cover skills, role, experience and education, and say what drives the score up or down.
 - "strengths": up to 3 short phrases (what matches well).
 - "gaps": up to 3 short phrases (missing or weaker areas); [] if none.
 - Respond with ONLY this JSON, one item per candidate, in order:
