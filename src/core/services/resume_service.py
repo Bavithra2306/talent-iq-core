@@ -61,6 +61,7 @@ DOC_TYPE_REVIEW = "review"
 _background: set[asyncio.Task] = set()
 # Live counters for running batches (the audit log is the durable record).
 progress: dict[str, "BatchProgress"] = {}
+_in_flight: dict[str, list["BatchItem"]] = {}  # batch id -> files being processed now
 
 
 @dataclass
@@ -275,6 +276,7 @@ async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) 
     from src.control.agents.ingestion_graph import ingestion_graph
 
     state = progress[batch_id]
+    _in_flight[batch_id] = items
     try:
         await ingestion_graph.ainvoke({"batch_id": batch_id, "user_id": user_id, "items": items})
     except Exception as exc:
@@ -283,9 +285,52 @@ async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) 
                         finished=True, error=str(exc)[:300])
     finally:
         state.finished = True
+        _in_flight.pop(batch_id, None)
         task = asyncio.create_task(_embed_in_background(batch_id, user_id))
         _background.add(task)
         task.add_done_callback(_background.discard)
+
+
+def _failed_resumes_query():
+    """Resume files stored but never read into a candidate (the AI or a reader failed).
+    Files waiting for review are not resumes yet, so they are not included."""
+    return select(Document).where(
+        Document.document_type == DOC_TYPE_RESUME,
+        ~select(ResumeExtraction.id).where(ResumeExtraction.resume_id == Document.id).exists(),
+    )
+
+
+def _running_ids() -> set[uuid.UUID]:
+    return {i.document_id for items in _in_flight.values() for i in items}
+
+
+async def count_failed(db: AsyncSession) -> int:
+    rows = (await db.execute(_failed_resumes_query())).scalars().all()
+    running = _running_ids()
+    return sum(d.id not in running for d in rows)
+
+
+async def retry_failed(db: AsyncSession, user: CurrentUser) -> UploadResult:
+    """Run every failed resume through the pipeline again (one new batch)."""
+    running = _running_ids()
+    documents = [d for d in (await db.execute(_failed_resumes_query())).scalars() if d.id not in running]
+    if not documents:
+        return UploadResult(batch_id=None, accepted=[], rejected=[])
+    items = [BatchItem(d.id, d.original_filename or d.stored_filename, d.file_path) for d in documents]
+    batch_id = str(uuid.uuid4())
+    await log_event(
+        user_id=user.id, category=ActionCategory.EXTRACTION, stage=PipelineStage.CREATED,
+        input_data=_batch_input(batch_id, files=len(items), rejected=0, retry_of_failed=True),
+    )
+    progress[batch_id] = BatchProgress(total=len(items))
+    task = asyncio.create_task(_run_batch(batch_id, user.id, items))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return UploadResult(
+        batch_id=batch_id,
+        accepted=[{"document_id": str(i.document_id), "filename": i.filename} for i in items],
+        rejected=[],
+    )
 
 
 def has_resume_details(result: prompt.ExtractedResume) -> bool:
@@ -333,7 +378,7 @@ async def _extract_group(texts: list[str]) -> tuple[dict[int, prompt.ExtractedRe
         system=prompt.system_prompt(),
         user=prompt.build_user_prompt(texts),
         response_model=prompt.ResumeBatch,
-        max_tokens=min(12000, 1200 * len(texts) + 500),
+        max_tokens=min(16000, 1600 * len(texts) + 500),
     )
     return {r.index: r for r in batch.results if 1 <= r.index <= len(texts)}, model
 

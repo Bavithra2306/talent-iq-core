@@ -88,6 +88,7 @@ class Pending:
     required: list[dict] | None = None  # [{"jd_skill", "level", "matched"}]
     nice: list[dict] | None = None
     role: dict | None = None  # {"level", "matched_role"}
+    industry: dict | None = None  # {"level" (None = unknown), "matched_industry"}
     from_cache: bool = False
     similarity: float | None = None  # combined cosine similarity to the job (0..1)
     summary: str | None = None  # written by the LLM in the scoring call
@@ -101,7 +102,7 @@ def job_signature(job: Job) -> str:
     """Identifies the LLM-relevant parts of a job; stored scores are reused only if unchanged."""
     payload = json.dumps(
         [(job.title or "").lower(), [s.lower() for s in job.skills or []],
-         [s.lower() for s in job.nice_to_have_skills or []]]
+         [s.lower() for s in job.nice_to_have_skills or []], (job.industry or "").lower()]
     )
     return hashlib.sha1(payload.encode()).hexdigest()[:16]
 
@@ -131,12 +132,23 @@ def _years(candidate: Candidate) -> float | None:
 
 
 def _role_lines(extraction: ResumeExtraction) -> list[str]:
+    """'Title, Industry (2 yrs, 2019-present)' per job, most recent first."""
     lines = []
     for role in extraction.roles_and_years or []:
         if isinstance(role, dict) and role.get("title"):
             years = role.get("years")
-            lines.append(f"{role['title']} ({years:g} yrs)" if isinstance(years, (int, float)) else role["title"])
+            start, end = role.get("start_year"), "present" if role.get("current") else role.get("end_year")
+            details = [f"{years:g} yrs" if isinstance(years, (int, float)) else None,
+                       f"{start or '?'}-{end}" if start or end else None]
+            text = role["title"] + (f", {role['industry']}" if role.get("industry") else "")
+            inner = ", ".join(d for d in details if d)
+            lines.append(f"{text} ({inner})" if inner else text)
     return lines[:8]
+
+
+def _experience(job: Job, p: Pending) -> tuple[float, str]:
+    return scoring_rules.experience_score(_years(p.candidate), job.experience_years,
+                                          p.extraction.roles_and_years, list(job.skills or []))
 
 
 def _filter_clauses(filters: ShortlistFilters) -> list:
@@ -311,6 +323,7 @@ async def apply_cache(db: AsyncSession, job: Job, pool: list[Pending], signature
             p.required = data["skills"]["required"]
             p.nice = data["skills"]["nice"]
             p.role = data["role"]
+            p.industry = data.get("industry")
             p.summary, p.strengths, p.gaps = data["summary"], data.get("strengths", []), data.get("gaps", [])
             p.from_cache = True
 
@@ -320,7 +333,7 @@ async def apply_cache(db: AsyncSession, job: Job, pool: list[Pending], signature
 def _candidate_prompt_data(job: Job, p: Pending) -> dict:
     """What the LLM sees: titles, roles and skills plus the code-computed facts it explains.
     No name, contact or other personal details."""
-    _, exp_note = scoring_rules.experience_score(_years(p.candidate), job.experience_years)
+    _, exp_note = _experience(job, p)
     _, edu_note = scoring_rules.education_score(p.extraction.education, job.education)
     return {
         "current_title": p.candidate.current_title,
@@ -345,6 +358,9 @@ def _apply_result(job: Job, p: Pending, result: match_scoring.CandidateMatch) ->
     p.required, p.nice = entries[:split], entries[split:]
     p.role = {"level": result.role.level,
               "matched_role": result.role.matched_role if result.role.level else None}
+    p.industry = None if not job.industry or result.industry.level is None else {
+        "level": result.industry.level,
+        "matched_industry": result.industry.matched_industry if result.industry.level else None}
     p.summary = result.summary.strip() or None
     p.strengths = [s.strip() for s in result.strengths if s.strip()][:3]
     p.gaps = [s.strip() for s in result.gaps if s.strip()][:3]
@@ -353,7 +369,7 @@ def _apply_result(job: Job, p: Pending, result: match_scoring.CandidateMatch) ->
 async def _score_group(job: Job, group: list[Pending]) -> list[Pending]:
     """Score a group with one LLM call; returns the candidates it could not score."""
     user = match_scoring.build_user_prompt(
-        title=job.title, category=job.category, required=list(job.skills or []),
+        title=job.title, category=job.category, industry=job.industry, required=list(job.skills or []),
         nice=list(job.nice_to_have_skills or []),
         candidates=[_candidate_prompt_data(job, p) for p in group],
     )
@@ -417,6 +433,12 @@ def _reason(p: Pending, exp_note: str, edu_note: str) -> list[str]:
         words = _ROLE_WORDS.get(level, f"role match {level}/100")
         matched = p.role.get("matched_role")
         lines.append(f"Role: {words}" + (f" ({matched})" if matched and level else ""))
+    if p.industry:
+        level = int(p.industry.get("level") or 0)
+        matched = p.industry.get("matched_industry")
+        words = {100: "same industry", 75: "closely related industry", 50: "some industry overlap",
+                 0: "different industry"}.get(level, f"industry match {level}/100")
+        lines.append(f"Industry: {words}" + (f" ({matched})" if matched and level else ""))
     if exp_note:
         lines.append(f"Experience: {exp_note}")
     if edu_note:
@@ -425,7 +447,7 @@ def _reason(p: Pending, exp_note: str, edu_note: str) -> list[str]:
 
 
 def _explanation_dict(job: Job, p: Pending, signature: str) -> dict:
-    exp_score, exp_note = scoring_rules.experience_score(_years(p.candidate), job.experience_years)
+    exp_score, exp_note = _experience(job, p)
     edu_score, edu_note = scoring_rules.education_score(p.extraction.education, job.education)
     if p.similarity is None:
         p.similarity = combined_similarity(p.sim_skill, p.sim_role)
@@ -437,6 +459,7 @@ def _explanation_dict(job: Job, p: Pending, signature: str) -> dict:
                    "role": None if p.sim_role is None else round(float(p.sim_role), 4)},
         "skills": {"required": p.required, "nice": p.nice, "required_avg": _avg(p.required)},
         "role": p.role,
+        "industry": p.industry,
         "experience": {"candidate_years": _years(p.candidate), "required_years": job.experience_years,
                        "score": exp_score, "note": exp_note},
         "education": {"required": job.education, "score": edu_score, "note": edu_note},
@@ -461,7 +484,8 @@ async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[P
     for p in scored:
         explanation = _explanation_dict(job, p, signature)
         skills = skill_score(p.required)
-        role = float(p.role["level"])
+        role = scoring_rules.role_industry_score(float(p.role["level"]),
+                                                 (p.industry or {}).get("level"))
         exp = explanation["experience"]["score"]
         edu = explanation["education"]["score"]
         total = scoring_rules.total_score(skills, role, exp, edu, weights)

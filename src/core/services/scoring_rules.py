@@ -1,11 +1,12 @@
 """Rule-based parts of scoring (no LLM): experience, education and the weighted total.
 
-Every component score is 0-100. Skill and role scores come from the LLM
-(see matching_service); experience and education are computed here.
+Every component score is 0-100. Skill, role and industry levels come from the LLM
+(see matching_service); experience, education and the role-and-industry mix are computed here.
 """
 
 import re
 from dataclasses import dataclass
+from datetime import date
 
 # ---------- weights ----------
 
@@ -26,6 +27,14 @@ class Weights:
     def as_dict(self) -> dict:
         return {"skill_pct": self.skill, "role_pct": self.role,
                 "exp_pct": self.exp, "edu_pct": self.edu}
+
+
+ROLE_SHARE, INDUSTRY_SHARE = 0.7, 0.3
+
+
+def role_industry_score(role: float, industry: float | None) -> float:
+    """Role and industry fit: 70% role, 30% industry; role alone when the industry is unknown."""
+    return float(role) if industry is None else round(ROLE_SHARE * role + INDUSTRY_SHARE * industry, 2)
 
 
 def total_score(skill: float, role: float, exp: float, edu: float, weights: Weights) -> float:
@@ -52,19 +61,90 @@ def breakdown(skill: float, role: float, exp: float, edu: float, weights: Weight
 # ---------- experience ----------
 
 
-def experience_score(candidate_years: float | None, required_years: float | None) -> tuple[float, str]:
-    """100 when the candidate meets the minimum, otherwise proportional (3 of 5 years = 60)."""
+# Older work counts for less: (years since the job ended, weight); anything older = 0.25.
+RECENCY_WEIGHTS = ((2, 1.0), (5, 0.75), (8, 0.5))
+OLD_WORK_WEIGHT = 0.25
+STALE_SKILL_YEARS = 5  # a required skill last used this long ago lowers the score
+STALE_SKILL_PENALTY, MAX_STALE_PENALTY = 10.0, 30.0
+
+
+def _years_since(role: dict, this_year: int) -> int | None:
+    if role.get("current"):
+        return 0
+    end = role.get("end_year")
+    return max(0, this_year - end) if isinstance(end, int) else None
+
+
+def recency_weight(years_ago: int) -> float:
+    return next((w for limit, w in RECENCY_WEIGHTS if years_ago <= limit), OLD_WORK_WEIGHT)
+
+
+def recent_years(roles: list[dict] | None, this_year: int) -> float | None:
+    """Work years with older jobs counting less; None when no job has dates."""
+    dated = [(r["years"], ago) for r in roles or [] if isinstance(r, dict)
+             and isinstance(r.get("years"), (int, float)) and (ago := _years_since(r, this_year)) is not None]
+    if not dated:
+        return None
+    return round(sum(years * recency_weight(ago) for years, ago in dated), 1)
+
+
+def _same_skill(wanted: str, listed: str) -> bool:
+    a, b = wanted.lower().strip(), listed.lower().strip()
+    return a == b or bool(re.search(rf"(?<![\w+#]){re.escape(a)}(?![\w+#])", b))
+
+
+def stale_skills(roles: list[dict] | None, required_skills: list[str] | None, this_year: int) -> list[tuple[str, int]]:
+    """Required skills whose most recent use (in a dated job) is STALE_SKILL_YEARS or more ago.
+    Skills not tied to any job are unknown, not stale."""
+    stale = []
+    for skill in required_skills or []:
+        last = None
+        for role in roles or []:
+            if not isinstance(role, dict) or not any(_same_skill(skill, s) for s in role.get("skills") or []):
+                continue
+            ago = _years_since(role, this_year)
+            if ago is not None:
+                year = this_year - ago
+                last = year if last is None else max(last, year)
+        if last is not None and this_year - last >= STALE_SKILL_YEARS:
+            stale.append((skill, last))
+    return stale
+
+
+def experience_score(candidate_years: float | None, required_years: float | None,
+                     roles: list[dict] | None = None, required_skills: list[str] | None = None,
+                     this_year: int | None = None) -> tuple[float, str]:
+    """Years against the minimum, with recent work counting more.
+
+    * Older jobs count for less (RECENCY_WEIGHTS) when the resume gives job dates.
+    * 100 when the (recency-weighted) years meet the minimum, otherwise proportional.
+    * Each required skill last used 5+ years ago takes 10 points off (at most 30).
+    """
+    this_year = this_year or date.today().year
+    stale = stale_skills(roles, required_skills, this_year)
+    stale_note = " ".join(f"{s} last used in {y} ({this_year - y} years ago)." for s, y in stale)
+    penalty = min(MAX_STALE_PENALTY, STALE_SKILL_PENALTY * len(stale))
+
     if not required_years:
-        return 100.0, "No minimum experience required."
-    if candidate_years is None:
+        score, note = 100.0, "No minimum experience required."
+    elif candidate_years is None:
         return 0.0, "The resume does not state the years of experience."
-    if candidate_years >= required_years:
-        note = f"{candidate_years:g} years meets the {required_years:g}-year requirement."
-        if candidate_years >= required_years * 2 and candidate_years - required_years >= 3:
-            note += " Well above the minimum (possibly overqualified)."
-        return 100.0, note
-    score = round(100 * candidate_years / required_years, 2)
-    return score, f"{candidate_years:g} years is below the {required_years:g}-year requirement."
+    else:
+        recent = recent_years(roles, this_year)
+        counted = candidate_years if recent is None else min(candidate_years, recent)
+        older = "" if counted >= candidate_years else f" ({counted:g} when older jobs count less)"
+        if counted >= required_years:
+            score = 100.0
+            note = f"{candidate_years:g} years{older} meets the {required_years:g}-year requirement."
+            if candidate_years >= required_years * 2 and candidate_years - required_years >= 3:
+                note += " Well above the minimum (possibly overqualified)."
+        else:
+            score = round(100 * counted / required_years, 2)
+            note = f"{candidate_years:g} years{older} is below the {required_years:g}-year requirement."
+    if penalty:
+        score = max(0.0, score - penalty)
+        note = f"{note} {stale_note}"
+    return round(score, 2), note
 
 
 # ---------- education ----------

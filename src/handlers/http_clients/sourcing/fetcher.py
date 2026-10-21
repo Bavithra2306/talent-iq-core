@@ -23,7 +23,14 @@ logger = logging.getLogger("talentiq.sourcing")
 
 
 class FetchError(Exception):
-    pass
+    def __init__(self, message: str, *, retryable: bool = False, retry_after: float | None = None):
+        super().__init__(message)
+        self.retryable, self.retry_after = retryable, retry_after
+
+
+# Portal unreachable, timed out, rate-limited (429) or a server error (5xx): try again.
+RETRY_DELAYS = (2.0, 5.0)  # seconds before the 2nd and 3rd attempt
+MAX_RETRY_AFTER = 30.0
 
 
 @dataclass
@@ -123,13 +130,31 @@ class PoliteFetcher:
                                    (response.headers.get("Content-Type") or "").split(";")[0].strip().lower(),
                                    data, dict(response.headers))
         except urllib.error.HTTPError as exc:
-            raise FetchError(f"HTTP {exc.code} from {urllib.parse.urlparse(url).netloc}.") from exc
+            host = urllib.parse.urlparse(url).netloc
+            retry_after = exc.headers.get("Retry-After") if exc.headers else None
+            message = {429: f"{host} is rate-limiting requests (HTTP 429).",
+                       403: f"{host} blocked the request (HTTP 403)."}.get(exc.code, f"HTTP {exc.code} from {host}.")
+            raise FetchError(message, retryable=exc.code == 429 or exc.code >= 500,
+                             retry_after=float(retry_after) if retry_after and retry_after.isdigit() else None) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise FetchError(f"Could not fetch {url}: {getattr(exc, 'reason', exc)}") from exc
+            raise FetchError(f"Could not reach {urllib.parse.urlparse(url).netloc}: {getattr(exc, 'reason', exc)}",
+                             retryable=True) from exc
 
     async def get(self, url: str, *, headers: dict | None = None, max_bytes: int | None = None,
                   check_robots: bool = True) -> FetchResult:
         host = urllib.parse.urlparse(url).netloc
-        await self._wait_turn(host)
-        return await asyncio.to_thread(self._get, url, headers or {},
-                                       max_bytes or settings.max_upload_bytes, check_robots)
+        for attempt, delay in enumerate((*RETRY_DELAYS, None), start=1):
+            await self._wait_turn(host)
+            try:
+                return await asyncio.to_thread(self._get, url, headers or {},
+                                               max_bytes or settings.max_upload_bytes, check_robots)
+            except FetchError as exc:
+                if not exc.retryable or delay is None:
+                    if attempt > 1:
+                        raise FetchError(f"{exc} (tried {attempt} times)") from exc
+                    raise
+                wait = min(MAX_RETRY_AFTER, max(delay, exc.retry_after or 0))
+                logger.warning("fetch failed, retrying", extra={"url": url, "attempt": attempt,
+                                                                "wait_seconds": wait, "error": str(exc)})
+                await asyncio.sleep(wait)
+        raise RuntimeError("unreachable")

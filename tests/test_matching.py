@@ -54,8 +54,22 @@ def test_scoring_prompt_has_no_personal_details_and_marks_nice_to_have_as_unscor
 
 def test_job_signature_changes_when_skills_change():
     class Job:
-        title, skills, nice_to_have_skills = "Dev", ["Python"], []
+        title, skills, nice_to_have_skills, industry = "Dev", ["Python"], [], None
 
     before = svc.job_signature(Job)
     Job.skills = ["Python", "SQL"]
     assert svc.job_signature(Job) != before
+
+
+def test_resume_roles_keep_plausible_years_only():
+    from src.control.agents.prompts.resume_extraction import Role
+    role = Role(title="Dev", start_year="Jan 2019", end_year="Present", current="true")
+    assert (role.start_year, role.end_year, role.current) == (2019, None, True)
+
+
+def test_role_lines_show_industry_and_dates():
+    from types import SimpleNamespace
+    extraction = SimpleNamespace(roles_and_years=[
+        {"title": "Analyst", "industry": "Banking", "years": 2, "start_year": 2024, "current": True},
+        {"title": "Intern", "years": 0.5}])
+    assert svc._role_lines(extraction) == ["Analyst, Banking (2 yrs, 2024-present)", "Intern (0.5 yrs)"]

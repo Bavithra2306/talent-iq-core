@@ -22,6 +22,9 @@ For every JD skill, decide how well the candidate's listed skills and roles cove
 For the ROLE, compare the JD job title with the candidate's current title and past roles with the same scale:
 100 = same role, 75 = closely related role, 50 = same field but a different role, 0 = unrelated.
 
+For the INDUSTRY (only when the job gives one), compare it with the industries of the candidate's jobs, the same scale:
+100 = same industry, 75 = closely related, 50 = some overlap, 0 = unrelated. Use level null when the job gives no industry or the candidate's industries cannot be told.
+
 Then explain the candidate to a recruiter, using the levels you gave and the profile similarity, experience and education facts provided:
 - "summary": 2-3 plain sentences: why this candidate fits the job (or not) and what holds the score down. Mention nice-to-have skills the candidate has (they do not change the score but are worth knowing). Do not write any score or percentage numbers.
 - "strengths": up to 3 short phrases, e.g. "Python and FastAPI as asked".
@@ -34,7 +37,7 @@ Rules:
 - For each JD skill, name the candidate skill that matched ("matched"), or null when level is 0.
 - The "skills" array must contain exactly one entry per JD skill, in the same order as listed (required skills first, then nice-to-have), with "jd_skill" copied exactly.
 - Respond with ONLY this JSON, one item per candidate, in order:
-{"results": [{"index": N, "skills": [{"jd_skill": str, "level": 0|50|75|100, "matched": str|null}], "role": {"level": 0|50|75|100, "matched_role": str|null}, "summary": str, "strengths": [str], "gaps": [str]}]}"""
+{"results": [{"index": N, "skills": [{"jd_skill": str, "level": 0|50|75|100, "matched": str|null}], "role": {"level": 0|50|75|100, "matched_role": str|null}, "industry": {"level": 0|50|75|100|null, "matched_industry": str|null}, "summary": str, "strengths": [str], "gaps": [str]}]}"""
 
 
 class SkillMatch(BaseModel):
@@ -63,10 +66,21 @@ class RoleMatch(BaseModel):
         return SkillMatch.snap(value)
 
 
+class IndustryMatch(BaseModel):
+    level: int | None = None
+    matched_industry: str | None = None
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def snap(cls, value):
+        return None if value is None or value == "" else SkillMatch.snap(value)
+
+
 class CandidateMatch(BaseModel):
     index: int
     skills: list[SkillMatch] = Field(default_factory=list)
     role: RoleMatch = Field(default_factory=RoleMatch)
+    industry: IndustryMatch = Field(default_factory=IndustryMatch)
     summary: str = ""
     strengths: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
@@ -78,13 +92,14 @@ class MatchBatch(BaseModel):
 
 def build_user_prompt(
     *, title: str, category: str | None, required: list[str], nice: list[str],
-    candidates: list[dict],
+    candidates: list[dict], industry: str | None = None,
 ) -> str:
     """candidates: dicts with current_title, roles (list of 'Title (2 yrs)'), skills, and the
     facts for the explanation: similarity (0-100), experience and education notes."""
     lines = ["JOB", f"Title: {title}"]
     if category:
         lines.append(f"Category: {category}")
+    lines.append(f"Industry: {industry}" if industry else "Industry: not given (use level null)")
     lines.append("Required skills:")
     lines += [f"{i}. {s}" for i, s in enumerate(required, start=1)]
     if nice:

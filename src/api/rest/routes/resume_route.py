@@ -63,6 +63,22 @@ async def batch_status(
     return await candidate_service.get_batch_status(db, batch_id)
 
 
+@ResumeRouter.get("/resumes/failed", response_model=dict[str, int], summary="How many resumes failed")
+async def failed_resumes(db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(recruiter_only)):
+    """Resume files that were stored but never read into a candidate (not counting the review queue)."""
+    return {"count": await resume_service.count_failed(db)}
+
+
+@ResumeRouter.post(
+    "/resumes/retry-failed", response_model=UploadResponse, status_code=status.HTTP_202_ACCEPTED,
+    summary="Run failed resumes again",
+)
+async def retry_failed_resumes(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(recruiter_only)):
+    """Puts every failed resume through the pipeline again as one new batch (poll it like an upload)."""
+    result = await resume_service.retry_failed(db, user)
+    return UploadResponse(batch_id=result.batch_id, accepted=result.accepted, rejected=result.rejected)
+
+
 @ResumeRouter.get("/candidates", response_model=CandidateListResponse)
 async def list_candidates(
     category: str | None = Query(default=None, description="e.g. IT, Medical"),
