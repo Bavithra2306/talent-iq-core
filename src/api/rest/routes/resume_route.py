@@ -27,8 +27,8 @@ from src.data.clients.postgres import get_db
 
 ResumeRouter = APIRouter(tags=["Resumes"])
 
-# Recruiters and hiring managers upload and browse the resume pool.
-resume_users = require_roles(Role.RECRUITER, Role.HIRING_MANAGER)
+# Only recruiters upload and browse the resume pool.
+recruiter_only = require_roles(Role.RECRUITER)
 
 
 @ResumeRouter.post(
@@ -39,7 +39,7 @@ async def upload_resumes(
         ..., description="Up to 150 PDF/DOCX resumes (scanned PDFs are OCR'd), or one zip file"
     ),
     db: AsyncSession = Depends(get_db),
-    user: CurrentUser = Depends(resume_users),
+    user: CurrentUser = Depends(recruiter_only),
 ):
     """Upload resumes: separate files, or one zip. Returns a batch id at once.
 
@@ -57,14 +57,14 @@ async def upload_resumes(
 async def batch_status(
     batch_id: str,
     db: AsyncSession = Depends(get_db),
-    _: CurrentUser = Depends(resume_users),
+    _: CurrentUser = Depends(recruiter_only),
 ):
     """Stage (created / collecting / reading / partly_completed / failed), counts and the event log."""
     return await candidate_service.get_batch_status(db, batch_id)
 
 
 @ResumeRouter.get("/resumes/failed", response_model=dict[str, int], summary="How many resumes failed")
-async def failed_resumes(db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(resume_users)):
+async def failed_resumes(db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(recruiter_only)):
     """Resume files that were stored but never read into a candidate (not counting the review queue)."""
     return {"count": await resume_service.count_failed(db)}
 
@@ -73,7 +73,7 @@ async def failed_resumes(db: AsyncSession = Depends(get_db), _: CurrentUser = De
     "/resumes/retry-failed", response_model=UploadResponse, status_code=status.HTTP_202_ACCEPTED,
     summary="Run failed resumes again",
 )
-async def retry_failed_resumes(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(resume_users)):
+async def retry_failed_resumes(db: AsyncSession = Depends(get_db), user: CurrentUser = Depends(recruiter_only)):
     """Puts every failed resume through the pipeline again as one new batch (poll it like an upload)."""
     result = await resume_service.retry_failed(db, user)
     return UploadResponse(batch_id=result.batch_id, accepted=result.accepted, rejected=result.rejected)
@@ -97,7 +97,7 @@ async def list_candidates(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
-    _: CurrentUser = Depends(resume_users),
+    _: CurrentUser = Depends(recruiter_only),
 ):
     items, total = await candidate_service.list_candidates(
         db, category=category, search=search, location=location, skill=skill,
@@ -111,7 +111,7 @@ async def list_candidates(
 @ResumeRouter.get("/candidates/categories", response_model=list[CategoryCount])
 async def candidate_categories(
     db: AsyncSession = Depends(get_db),
-    _: CurrentUser = Depends(resume_users),
+    _: CurrentUser = Depends(recruiter_only),
 ):
     """How many candidates are in each category."""
     return await candidate_service.category_counts(db)
@@ -121,7 +121,7 @@ async def candidate_categories(
 async def get_candidate(
     candidate_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _: CurrentUser = Depends(resume_users),
+    _: CurrentUser = Depends(recruiter_only),
 ):
     return await candidate_service.get_candidate(db, candidate_id)
 
@@ -132,7 +132,7 @@ async def download_resume(
     candidate_id: uuid.UUID,
     download: bool = Query(default=False, description="true: the original file as a download"),
     db: AsyncSession = Depends(get_db),
-    _: CurrentUser = Depends(resume_users),
+    _: CurrentUser = Depends(recruiter_only),
 ):
     document, content = await candidate_service.get_resume_file(db, candidate_id)
     return file_response(content, document.original_filename or "resume", download)
@@ -145,13 +145,13 @@ async def download_resume(
     summary="Files waiting for review",
     description='Uploaded or sourced files the AI judged "not a resume". The recruiter decides.',
 )
-async def review_files(db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(resume_users)):
+async def review_files(db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(recruiter_only)):
     return await resume_review_service.list_files(db)
 
 
 @ResumeRouter.get("/resumes/review/{document_id}/file", summary="Open a file waiting for review")
 async def review_file(document_id: uuid.UUID, download: bool = False,
-                      db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(resume_users)):
+                      db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(recruiter_only)):
     document, content = await resume_review_service.get_file(db, document_id)
     return file_response(content, document.original_filename or "file", download)
 
@@ -161,7 +161,7 @@ async def review_file(document_id: uuid.UUID, download: bool = False,
     summary="It is a resume", description="Reads the file as a resume and saves the candidate.",
 )
 async def accept_review_file(document_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-                             user: CurrentUser = Depends(resume_users)):
+                             user: CurrentUser = Depends(recruiter_only)):
     return await resume_review_service.accept_as_resume(db, user, document_id)
 
 
@@ -170,6 +170,6 @@ async def accept_review_file(document_id: uuid.UUID, db: AsyncSession = Depends(
     summary="Not a resume: delete it", description="Removes the file and its record.",
 )
 async def delete_review_file(document_id: uuid.UUID, db: AsyncSession = Depends(get_db),
-                             user: CurrentUser = Depends(resume_users)):
+                             user: CurrentUser = Depends(recruiter_only)):
     await resume_review_service.delete_file(db, user, document_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
