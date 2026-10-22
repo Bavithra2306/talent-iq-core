@@ -15,6 +15,7 @@ from src.constants.enums import Action, ActionCategory, CandidateStatus, Pipelin
 from src.core.exceptions import NotFoundError
 from src.core.services import matching_service
 from src.core.services.audit_service import log_event, utcnow
+from src.core.services.friendly_errors import friendly_error
 from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.job import Job
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
@@ -157,7 +158,8 @@ async def export_shortlist(db: AsyncSession, user: CurrentUser, job_id: uuid.UUI
     except Exception as exc:
         await log_event(user_id=user.id, category=ActionCategory.EXPORTING,
                         action=Action.SHORTLIST_EXPORT_FAILED, job_id=job_id,
-                        input_data=request, output_data=str(exc)[:300], start_time=started)
+                        input_data=request, output_data=friendly_error(exc, "preparing the export"),
+                        start_time=started)
         raise
     await log_event(user_id=user.id, category=ActionCategory.EXPORTING, stage=PipelineStage.EXPORTED,
                     action=Action.SHORTLIST_EXPORT_COMPLETED, job_id=job_id, input_data=request,

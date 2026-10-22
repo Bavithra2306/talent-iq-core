@@ -29,6 +29,7 @@ from src.core.exceptions import (
 )
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import parser
+from src.core.services.friendly_errors import friendly_error
 from src.core.services.job_embedding_service import refresh_job_embedding
 from src.data.clients.storage import storage
 from src.data.models.postgres.document import Document
@@ -187,7 +188,7 @@ async def extract_jd(
         await log_event(
             user_id=user.id, category=ActionCategory.EXTRACTION,
             action=Action.PARSING_FAILED, input_data={"document_id": str(document.id)},
-            output_data=str(exc), start_time=started,
+            output_data=friendly_error(exc, "reading the job description file"), start_time=started,
         )
         raise UnprocessableError(
             "The file could not be read. Please upload a clearer file."
@@ -216,7 +217,7 @@ async def extract_jd(
         await log_event(
             user_id=user.id, category=ActionCategory.EXTRACTION,
             action=Action.EXTRACTION_FAILED, input_data={"document_id": str(document.id)},
-            output_data=str(exc), start_time=started,
+            output_data=friendly_error(exc, "reading the job description"), start_time=started,
         )
         raise ServiceUnavailableError(
             "The AI service is busy or unavailable. Please try again in a minute.",

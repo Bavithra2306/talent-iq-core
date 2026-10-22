@@ -21,6 +21,17 @@ def utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
+def _enum(cls, value):
+    """The enum member for a member or for its text (value or name); None for anything else.
+    Logging must never break a run, so a plain string is accepted instead of crashing on ``.value``."""
+    if value is None or isinstance(value, cls):
+        return value
+    try:
+        return cls(value)
+    except ValueError:
+        return cls.__members__.get(str(value).upper())
+
+
 def _to_text(value) -> str | None:
     if value is None or isinstance(value, str):
         return value
@@ -39,6 +50,7 @@ async def log_event(
     start_time: datetime | None = None,
     end_time: datetime | None = None,
 ) -> None:
+    category, action, stage = _enum(ActionCategory, category), _enum(Action, action), _enum(PipelineStage, stage)
     end_time = end_time or utcnow()
     duration = (
         int((end_time - start_time).total_seconds() * 1000) if start_time else None

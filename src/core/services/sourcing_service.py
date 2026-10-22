@@ -21,6 +21,7 @@ from src.constants.categories import SUGGESTED_CATEGORIES
 from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.core.services import resume_service
 from src.core.services.audit_service import log_event
+from src.core.services.friendly_errors import friendly_error
 from src.data.clients.postgres import AsyncSessionLocal
 from src.data.models.postgres.document import Document
 from src.handlers.http_clients.sourcing.keywords import Resolved, resolve
@@ -184,7 +185,7 @@ async def _run(batch_id: str, user: CurrentUser, request: SourcingRunRequest) ->
                 found = await _collect(spec, keyword)
             except Exception as exc:
                 logger.exception("source %s crashed", spec.type)
-                found = SourceResult(errors=[f"unexpected error: {str(exc)[:200]}"])
+                found = SourceResult(errors=[friendly_error(exc, f"collecting from {spec.type}")])
             files += found.files
             action = (Action.SCRAPING_FAILED if not found.files
                       else Action.SCRAPING_PARTIALLY_COMPLETED if found.partial or found.errors
@@ -215,4 +216,4 @@ async def _run(batch_id: str, user: CurrentUser, request: SourcingRunRequest) ->
     except Exception as exc:
         logger.exception("sourcing run %s crashed", batch_id)
         await log(stage=PipelineStage.FAILED, action=Action.SCRAPING_FAILED,
-                  output_data={"finished": True, "error": str(exc)[:300]})
+                  output_data={"finished": True, "error": friendly_error(exc, "collecting resumes")})

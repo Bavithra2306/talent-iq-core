@@ -37,6 +37,7 @@ from src.control.agents.prompts import resume_check as check_prompt
 from src.control.agents.prompts import resume_extraction as prompt
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.document_parser import ParsedDocument, detect_file_type
+from src.core.services.friendly_errors import friendly_error
 from src.core.services.jd_service import clean_skills
 from src.data.clients.postgres import AsyncSessionLocal
 from src.data.clients.storage import storage
@@ -282,7 +283,7 @@ async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) 
     except Exception as exc:
         logger.exception("batch %s crashed", batch_id)
         await log_stage(batch_id, user_id, PipelineStage.FAILED, state,
-                        finished=True, error=str(exc)[:300])
+                        finished=True, error=friendly_error(exc, "reading the resumes"))
     finally:
         state.finished = True
         _in_flight.pop(batch_id, None)
@@ -438,7 +439,7 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
         logger.exception("group failed in batch %s", batch_id)
         for item, _ in group:
             if not any(f["filename"] == item.filename for f in state.failures):
-                await fail_item(batch_id, user_id, state, item, f"Unexpected error: {str(exc)[:120]}")
+                await fail_item(batch_id, user_id, state, item, friendly_error(exc, "reading this resume"))
 
 
 async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, parsed: ParsedDocument,

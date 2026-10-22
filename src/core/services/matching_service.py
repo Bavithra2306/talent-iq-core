@@ -40,6 +40,7 @@ from src.control.agents.prompts import match_explanation, match_scoring
 from src.core.exceptions import BadRequestError, ConflictError, NotFoundError
 from src.core.services import scoring_rules
 from src.core.services.audit_service import log_event
+from src.core.services.friendly_errors import friendly_error
 from src.core.services.job_embedding_service import refresh_job_embedding
 from src.core.services.query_helpers import skill_clause
 from src.core.services.scoring_rules import Weights
@@ -223,7 +224,8 @@ async def _run(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, request: Shor
     except Exception as exc:
         logger.exception("matching run %s crashed", run_id)
         await log_stage(run_id, user_id, job_id, state, PipelineStage.FAILED, action=Action.SCORING_FAILED,
-                        category=ActionCategory.SCORING, finished=True, error=str(exc)[:300])
+                        category=ActionCategory.SCORING, finished=True,
+                        error=friendly_error(exc, "scoring the candidates"))
     finally:
         state.finished = True
         _running_jobs.discard(job_id)
