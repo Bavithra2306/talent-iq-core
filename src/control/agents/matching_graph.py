@@ -69,7 +69,7 @@ async def collect(state: MatchingState, config: RunnableConfig) -> dict:
     weights = await svc.load_weights(db, state["job_id"])
     await _stage(state, PipelineStage.COLLECTING, job_category=job.category)
     vectors = await svc.job_vectors(db, job, state["user_id"])
-    pool, considered, below, not_indexed, level = await svc.select_candidates(db, job, vectors)
+    pool, considered, below, not_indexed, level = await svc.select_candidates(db, job, vectors, state["request"].extra_candidate_ids)
     progress.considered, progress.pool = considered, len(pool)
     progress.below_threshold, progress.not_indexed, progress.threshold = below, not_indexed, level
     counts = {"considered": considered, "below_threshold": below, "not_indexed": not_indexed,

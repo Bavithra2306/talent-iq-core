@@ -258,6 +258,7 @@ def combined_similarity(sim_skill: float | None, sim_role: float | None) -> floa
 
 async def select_candidates(
     db: AsyncSession, job: Job, job_vectors: tuple[list[float] | None, list[float] | None],
+    extra_ids: list[uuid.UUID] | None = None,
 ) -> tuple[list[Pending], int, int, int, float]:
     """Every resume in the job's category, compared with the job.
 
@@ -301,6 +302,23 @@ async def select_candidates(
         usable = [p for p in indexed if (p.similarity or 0) >= settings.match_min_similarity]
         chosen = usable[:max(len(strong), settings.match_fill_to)]
     chosen = chosen[:settings.match_max_llm]
+    # Candidates added by hand from another job are always scored, even outside the category or the threshold.
+    if extra_ids:
+        taken = {p.candidate.id for p in chosen}
+        extra_rows = (await db.execute(
+            select(Candidate, ResumeExtraction, sim_skill.label("sim_skill"), sim_role.label("sim_role"))
+            .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
+            .outerjoin(skill_emb, and_(skill_emb.resume_id == Candidate.current_resume_id,
+                                       skill_emb.kind == EmbeddingKind.SKILL))
+            .outerjoin(role_emb, and_(role_emb.resume_id == Candidate.current_resume_id,
+                                      role_emb.kind == EmbeddingKind.ROLE))
+            .where(Candidate.id.in_(extra_ids))
+        )).all()
+        for candidate, extraction, s_skill, s_role in extra_rows:
+            if candidate.id not in taken:
+                p = Pending(candidate, extraction, s_skill, s_role)
+                p.similarity = combined_similarity(s_skill, s_role)
+                chosen.append(p)
     lowest = min((p.similarity or 0 for p in chosen), default=settings.match_strong_similarity)
     return chosen, len(rows), len(indexed) - len(chosen), not_indexed, lowest
 

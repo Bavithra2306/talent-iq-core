@@ -24,6 +24,8 @@ class ShortlistRunRequest(BaseModel):
 
     filters: ShortlistFilters = Field(default_factory=ShortlistFilters)
     top_k: int = Field(default=10, ge=1, le=100)
+    # Candidates the recruiter added by hand from another job; they are scored whatever their category or similarity.
+    extra_candidate_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)
 
 
 class TopKRequest(BaseModel):
