@@ -44,6 +44,7 @@ from src.data.clients.storage import storage
 from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.document import Document
 from src.data.models.postgres.job import Job
+from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 from src.data.models.postgres.resume_embedding import ResumeEmbedding
 from src.data.models.postgres.resume_extraction import ResumeExtraction
 from src.handlers.http_clients import embedding_client
@@ -442,6 +443,21 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
                 await fail_item(batch_id, user_id, state, item, friendly_error(exc, "reading this resume"))
 
 
+async def _reopen_rejected(db: AsyncSession, candidate_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """A rejection was about the old resume. When the person sends a new one, their rejected entries go back to
+    matched (not shared) with a note, so a recruiter can shortlist them again. Approved entries are left alone."""
+    rows = (await db.execute(select(MatchingShortlisting).where(
+        MatchingShortlisting.candidate_id == candidate_id,
+        MatchingShortlisting.status == CandidateStatus.REJECTED,
+    ))).scalars().all()
+    note = "Resume updated after this candidate was rejected; they can be shortlisted again."
+    for row in rows:
+        row.status = CandidateStatus.SOURCED
+        row.shared_to = None
+        row.notes_by_recruiter = f"{row.notes_by_recruiter} {note}" if row.notes_by_recruiter else note
+        row.updated_by = user_id
+
+
 async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, parsed: ParsedDocument,
                        result: prompt.ExtractedResume, model: str) -> bool:
     """Save one resume. Returns True for a new person, False when it updated someone we had."""
@@ -489,6 +505,7 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
                 setattr(candidate, key, value)
         candidate.current_resume_id = document.id
         candidate.updated_by = user_id
+        await _reopen_rejected(db, candidate.id, user_id)
     await db.flush()
 
     db.add(ResumeExtraction(

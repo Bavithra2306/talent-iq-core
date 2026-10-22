@@ -244,14 +244,16 @@ async def shortlist_top_k(
         education=filters.education, skills=filters.must_have_skills, min_score=min_score,
         sort="score", descending=True, limit=10_000,
     )
-    chosen = {e.id for e in entries[:top_k]}
     rows = (await db.execute(
         select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id)
     )).scalars().all()
+    open_rows = [r for r in rows if r.shared_to is None
+                 and r.status in (CandidateStatus.SOURCED, CandidateStatus.SHORTLISTED)]
+    # The best K among those that can still change; candidates already shared or decided don't use up places.
+    changeable = {r.id for r in open_rows}
+    chosen = {e.id for e in [e for e in entries if e.id in changeable][:top_k]}
     picked = []
-    for row in rows:
-        if row.shared_to is not None or row.status not in (CandidateStatus.SOURCED, CandidateStatus.SHORTLISTED):
-            continue
+    for row in open_rows:
         row.status = CandidateStatus.SHORTLISTED if row.id in chosen else CandidateStatus.SOURCED
         row.updated_by = user.id
         if row.id in chosen:
