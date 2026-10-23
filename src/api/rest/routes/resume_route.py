@@ -9,6 +9,7 @@ from src.api.rest.schemas.candidate_schema import (
     CandidateDetail,
     CandidateListResponse,
     CategoryCount,
+    LocationCount,
 )
 from src.api.rest.schemas.ingestion_schema import (
     BatchStatus,
@@ -115,6 +116,15 @@ async def candidate_categories(
 ):
     """How many candidates are in each category."""
     return await candidate_service.category_counts(db)
+
+
+@ResumeRouter.get("/candidates/locations", response_model=list[LocationCount])
+async def candidate_locations(
+    db: AsyncSession = Depends(get_db),
+    _: CurrentUser = Depends(recruiter_only),
+):
+    """How many candidates live in each city."""
+    return await candidate_service.location_counts(db)
 
 
 @ResumeRouter.get("/candidates/{candidate_id}", response_model=CandidateDetail)

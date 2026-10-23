@@ -36,6 +36,11 @@ class CandidateDetail(CandidateListItem):
     file_name: str | None = None
 
 
+class LocationCount(BaseModel):
+    location: str | None
+    count: int
+
+
 class CategoryCount(BaseModel):
     category: str | None
     count: int
