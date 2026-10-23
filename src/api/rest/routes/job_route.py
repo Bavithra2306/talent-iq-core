@@ -52,15 +52,18 @@ async def create_job(
 async def list_jobs(
     status_filter: JobStatus | None = Query(default=None, alias="status"),
     category: str | None = None,
-    search: str | None = Query(default=None, description="matches title or location"),
+    search: str | None = Query(default=None, description="matches title, role, location or a required skill"),
+    location: str | None = None,
+    min_experience: int | None = Query(default=None, ge=0),
+    max_experience: int | None = Query(default=None, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
     _: CurrentUser = Depends(get_current_user),
 ):
     items, total = await jd_service.list_jobs(
-        db, status_filter=status_filter, category=category,
-        search=search, limit=limit, offset=offset,
+        db, status_filter=status_filter, category=category, search=search, limit=limit, offset=offset,
+        location=location, min_experience=min_experience, max_experience=max_experience,
     )
     return JobListResponse(items=items, total=total)
 

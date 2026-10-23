@@ -8,7 +8,7 @@ import logging
 import uuid
 
 from fpdf import FPDF
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser
@@ -347,6 +347,9 @@ async def list_jobs(
     search: str | None,
     limit: int,
     offset: int,
+    location: str | None = None,
+    min_experience: int | None = None,
+    max_experience: int | None = None,
 ) -> tuple[list[Job], int]:
     query = select(Job).where(_active())
     if status_filter:
@@ -355,7 +358,14 @@ async def list_jobs(
         query = query.where(Job.category.ilike(category))
     if search:
         pattern = f"%{search}%"
-        query = query.where(or_(Job.title.ilike(pattern), Job.location.ilike(pattern)))
+        query = query.where(or_(Job.title.ilike(pattern), Job.role_name.ilike(pattern), Job.location.ilike(pattern),
+                                cast(Job.skills, String).ilike(pattern)))
+    if location:
+        query = query.where(Job.location.ilike(location))
+    if min_experience is not None:
+        query = query.where(Job.experience_years >= min_experience)
+    if max_experience is not None:
+        query = query.where(Job.experience_years <= max_experience)
 
     total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
     rows = await db.execute(
