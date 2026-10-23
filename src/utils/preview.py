@@ -40,6 +40,5 @@ def docx_to_html(data: bytes, title: str) -> str:
         f"<meta http-equiv=\"Content-Security-Policy\" content=\"{_CSP}\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         f"<title>{name}</title><style>{_STYLE}</style></head><body>"
-        f"<div class=\"bar\">Preview of {name}. Use Download to get the original Word file.</div>"
         f"<div class=\"page\">{body}</div></body></html>"
     )
