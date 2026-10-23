@@ -63,6 +63,16 @@ async def batch_status(
     return await candidate_service.get_batch_status(db, batch_id)
 
 
+@ResumeRouter.get("/resumes/batches/{batch_id}/candidates", response_model=list[CandidateDetail])
+async def batch_candidates(
+    batch_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: CurrentUser = Depends(recruiter_only),
+):
+    """The resumes this upload or sourcing batch added, with the fields read from each."""
+    return await candidate_service.list_batch_candidates(db, batch_id)
+
+
 @ResumeRouter.get("/resumes/failed", response_model=dict[str, int], summary="How many resumes failed")
 async def failed_resumes(db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(recruiter_only)):
     """Resume files that were stored but never read into a candidate (not counting the review queue)."""

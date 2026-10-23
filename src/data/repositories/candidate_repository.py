@@ -82,6 +82,18 @@ async def search(
     return [tuple(r) for r in rows], total
 
 
+async def find_batch_resumes(db: AsyncSession, batch_id: str):
+    """(candidate, extraction, resume document) of every resume a batch added that became a candidate."""
+    rows = await db.execute(
+        select(Candidate, ResumeExtraction, Document)
+        .join(Document, Document.id == Candidate.current_resume_id)
+        .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
+        .where(Document.batch_id == batch_id)
+        .order_by(Candidate.name, Candidate.id)
+    )
+    return [tuple(r) for r in rows.all()]
+
+
 async def find_job_status_rows(db: AsyncSession, candidate_ids: list[uuid.UUID]):
     """(candidate id, job id, job title, status, total score) per candidate and job, best score first."""
     rows = await db.execute(

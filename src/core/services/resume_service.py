@@ -144,6 +144,8 @@ async def accept_uploads(
     files already refused earlier (for example the wrong types found inside a zip).
     """
     rejected: list[dict] = list(pre_rejected or [])
+    announce = batch_id is None  # uploads announce their own batch; sourcing runs already did
+    batch_id = batch_id or str(uuid.uuid4())
     candidates: list[tuple[UploadedFile, FileType, str]] = []
     seen_hashes: set[str] = set()
 
@@ -200,6 +202,7 @@ async def accept_uploads(
             file_type=file_type,
             file_size=len(upload.data),
             file_path=key,
+            batch_id=batch_id,
         )
         await resume_repository.add_document(db, document)
         items.append(BatchItem(document.id, name, key))
@@ -208,8 +211,7 @@ async def accept_uploads(
     if not items:
         return UploadResult(batch_id=None, accepted=[], rejected=rejected)
 
-    if batch_id is None:  # sourcing runs create (and log) their batch themselves
-        batch_id = str(uuid.uuid4())
+    if announce:  # sourcing runs create (and log) their batch themselves
         await log_event(
             user_id=user.id, category=ActionCategory.EXTRACTION, stage=PipelineStage.CREATED,
             input_data=_batch_input(batch_id, files=len(items), rejected=len(rejected)),

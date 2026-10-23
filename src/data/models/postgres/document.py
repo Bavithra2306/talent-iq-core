@@ -31,6 +31,8 @@ class Document(IdMixin, Base):
     # storage key, not a full path or URL
     file_path: Mapped[str] = mapped_column(String, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # the upload or sourcing batch that added this file (None for files added before batches were recorded)
+    batch_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )

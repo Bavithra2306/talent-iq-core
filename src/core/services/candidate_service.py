@@ -145,6 +145,25 @@ async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> CandidateD
     return detail
 
 
+async def list_batch_candidates(db: AsyncSession, batch_id: str) -> list[CandidateDetail]:
+    """The resumes one upload or sourcing batch added, with what was read from each."""
+    rows = await candidate_repository.find_batch_resumes(db, batch_id)
+    statuses = await job_statuses(db, [c.id for c, _, _ in rows])
+    details = []
+    for candidate, extraction, document in rows:
+        detail = CandidateDetail.model_validate(candidate)
+        detail.source_site = document.source_site
+        detail.file_name = document.original_filename
+        detail.job_statuses = statuses.get(candidate.id, [])
+        if extraction is not None:
+            detail.skills = extraction.skills or []
+            detail.education = extraction.education
+            detail.roles_and_years = extraction.roles_and_years
+            detail.extraction_model = extraction.model_version
+        details.append(detail)
+    return details
+
+
 async def category_counts(db: AsyncSession) -> list[dict]:
     return [{"category": c, "count": n} for c, n in await candidate_repository.count_by_category(db)]
 
