@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Literal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.schemas.candidate_schema import CandidateDetail, CandidateListItem, JobStatusItem
@@ -106,7 +106,8 @@ def _apply_filters(query, *, category, search, location, skill, min_experience,
     if search:
         pattern = f"%{search}%"
         query = query.where(or_(Candidate.name.ilike(pattern), Candidate.email.ilike(pattern),
-                                Candidate.current_title.ilike(pattern)))
+                                Candidate.current_title.ilike(pattern), Candidate.location.ilike(pattern),
+                                cast(ResumeExtraction.skills, String).ilike(pattern)))
     if location:
         query = query.where(Candidate.location.ilike(f"%{location}%"))
     if skill:
