@@ -361,7 +361,7 @@ async def list_jobs(
         query = query.where(or_(Job.title.ilike(pattern), Job.role_name.ilike(pattern), Job.location.ilike(pattern),
                                 cast(Job.skills, String).ilike(pattern)))
     if location:
-        query = query.where(Job.location.ilike(location))
+        query = query.where(Job.location.ilike(f"{location.strip()}%"))  # "Chennai" also finds "Chennai, India"
     if min_experience is not None:
         query = query.where(Job.experience_years >= min_experience)
     if max_experience is not None:
