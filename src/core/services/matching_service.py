@@ -432,7 +432,7 @@ def _reason(p: Pending, exp_note: str, edu_note: str) -> list[str]:
     """Plain-language reasons for the score, built from the scoring data (no extra AI call)."""
     lines = []
     if p.similarity is not None:
-        lines.append(f"{round(p.similarity * 100)}% similar to the job description")
+        lines.append(f"{round(p.similarity * 100)}% matching with the job description")
     required = p.required or []
     if required:
         strong = [i["jd_skill"] for i in required if i["level"] >= 75]
