@@ -217,13 +217,6 @@ async def category_counts(db: AsyncSession) -> list[dict]:
     return [{"category": c, "count": n} for c, n in rows.all()]
 
 
-async def location_counts(db: AsyncSession) -> list[dict]:
-    """Candidates per city (the text before the first comma, lower case)."""
-    city = func.lower(func.trim(func.split_part(Candidate.location, ",", 1)))
-    rows = await db.execute(select(city, func.count()).where(Candidate.location.is_not(None)).group_by(city))
-    return [{"location": c, "count": n} for c, n in rows.all() if c]
-
-
 async def get_resume_file(db: AsyncSession, candidate_id: uuid.UUID) -> tuple[Document, bytes]:
     candidate = await db.get(Candidate, candidate_id)
     if candidate is None:
