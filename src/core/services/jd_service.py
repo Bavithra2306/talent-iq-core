@@ -8,7 +8,6 @@ import logging
 import uuid
 
 from fpdf import FPDF
-from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser
@@ -34,7 +33,7 @@ from src.core.services.job_embedding_service import refresh_job_embedding
 from src.data.clients.storage import storage
 from src.data.models.postgres.document import Document
 from src.data.models.postgres.job import Job
-from src.data.models.postgres.scoring_config import ScoringConfig
+from src.data.repositories import jd_repository
 from src.handlers.http_clients.llm_client import LLMError, llm
 from src.schema.job_schema import JobCreate, JobUpdate
 from src.utils.file_types import Kind, detect_kind
@@ -144,8 +143,7 @@ async def _store_document(
         file_size=len(data),
         file_path=key,
     )
-    db.add(document)
-    await db.flush()
+    await jd_repository.add_document(db, document)
     return document
 
 
@@ -158,9 +156,7 @@ async def extract_jd(
     file_hash = hashlib.sha256(data).hexdigest()
     warnings: list[str] = []
 
-    document = (
-        await db.execute(select(Document).where(Document.file_hash == file_hash))
-    ).scalar_one_or_none()
+    document = await jd_repository.find_document_by_hash(db, file_hash)
     is_new_document = document is None
     if document is None:
         document = await _store_document(
@@ -175,9 +171,7 @@ async def extract_jd(
     else:
         pass  # the same file again: reuse the stored copy
 
-    existing_job_id = (
-        await db.execute(select(Job.id).where(Job.jd_id == document.id, Job.deleted_at.is_(None)).limit(1))
-    ).scalar_one_or_none()
+    existing_job_id = await jd_repository.find_active_job_id_by_document(db, document.id)
 
     # Parse
     started = utcnow()
@@ -235,7 +229,7 @@ async def extract_jd(
         if is_new_document:
             # Don't keep a file that turned out not to be a JD.
             storage.delete(document.file_path)
-            await db.delete(document)
+            await jd_repository.delete_document(db, document)
             await db.commit()
         raise UnprocessableError(
             "This file doesn't look like a job description"
@@ -262,10 +256,6 @@ async def extract_jd(
 
 # ---------- CRUD ----------
 
-def _active():
-    return Job.deleted_at.is_(None)
-
-
 async def create_job(
     db: AsyncSession, user: CurrentUser, data: JobCreate, confirm_duplicate: bool = False
 ) -> Job:
@@ -275,22 +265,17 @@ async def create_job(
     data.category = normalize_category(data.category)
 
     if data.jd_id is not None:
-        document = await db.get(Document, data.jd_id)
+        document = await jd_repository.get_document(db, data.jd_id)
         if document is None or document.document_type != DOC_TYPE_JD:
             raise NotFoundError("Job description file not found.")
         # The same file can back only one active job.
-        same_file = (await db.execute(
-            select(Job).where(Job.jd_id == document.id, _active()).limit(1)
-        )).scalar_one_or_none()
+        same_file = await jd_repository.find_active_job_by_document(db, document.id)
         if same_file is not None:
             raise ConflictError(f'This job description is already used by the job "{same_file.title}".')
         jd_id = document.id
 
     if not confirm_duplicate:
-        same_name = (await db.execute(
-            select(Job).where(_active(), func.lower(Job.title) == data.title.strip().lower(),
-                              Job.category.is_not_distinct_from(data.category)).limit(1)
-        )).scalar_one_or_none()
+        same_name = await jd_repository.find_active_job_by_title(db, data.title, data.category)
         if same_name is not None:
             raise DuplicateJobError(
                 f'A job called "{same_name.title}" already exists'
@@ -323,12 +308,10 @@ async def create_job(
         nice_to_have_skills=data.nice_to_have_skills,
         created_by=user.id,
     )
-    db.add(job)
-    await db.flush()
-    # Default weights: skill 40, role 20, experience 25, education 15.
-    db.add(ScoringConfig(job_id=job.id, created_by=user.id))
+    await jd_repository.add_job(db, job)
+    jd_repository.add_scoring_config(db, job.id, user.id)  # default weights: skill 40, role 20, experience 25, education 15
     await db.commit()
-    await db.refresh(job)
+    await jd_repository.refresh(db, job)
     await refresh_job_embedding(db, job, user.id)
 
     await log_event(
@@ -351,31 +334,14 @@ async def list_jobs(
     min_experience: int | None = None,
     max_experience: int | None = None,
 ) -> tuple[list[Job], int]:
-    query = select(Job).where(_active())
-    if status_filter:
-        query = query.where(Job.status == status_filter)
-    if category:
-        query = query.where(Job.category.ilike(category))
-    if search:
-        pattern = f"%{search}%"
-        query = query.where(or_(Job.title.ilike(pattern), Job.role_name.ilike(pattern), Job.location.ilike(pattern),
-                                cast(Job.skills, String).ilike(pattern)))
-    if location:
-        query = query.where(Job.location.ilike(f"{location.strip()}%"))  # "Chennai" also finds "Chennai, India"
-    if min_experience is not None:
-        query = query.where(Job.experience_years >= min_experience)
-    if max_experience is not None:
-        query = query.where(Job.experience_years <= max_experience)
-
-    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
-    rows = await db.execute(
-        query.order_by(Job.created_at.desc()).limit(limit).offset(offset)
+    return await jd_repository.search_jobs(
+        db, status_filter=status_filter, category=category, search=search, location=location,
+        min_experience=min_experience, max_experience=max_experience, limit=limit, offset=offset,
     )
-    return list(rows.scalars()), total
 
 
 async def get_job(db: AsyncSession, job_id: uuid.UUID) -> Job:
-    job = await db.get(Job, job_id)
+    job = await jd_repository.get_job(db, job_id)
     if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     return job
@@ -408,7 +374,7 @@ async def update_job(
         setattr(job, field, value)
     job.updated_by = user.id
     await db.commit()
-    await db.refresh(job)
+    await jd_repository.refresh(db, job)
     if {"title", "skills", "nice_to_have_skills"} & changes.keys():
         await refresh_job_embedding(db, job, user.id)
     return job
@@ -416,7 +382,7 @@ async def update_job(
 
 async def get_jd_file(db: AsyncSession, job_id: uuid.UUID) -> tuple[Document, bytes]:
     job = await get_job(db, job_id)
-    document = await db.get(Document, job.jd_id)
+    document = await jd_repository.get_document(db, job.jd_id)
     if document is None:
         raise NotFoundError("JD document not found.")
     return document, storage.read(document.file_path)

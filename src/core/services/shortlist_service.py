@@ -8,7 +8,6 @@ import uuid
 from datetime import datetime
 from typing import Literal
 
-from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser
@@ -27,15 +26,13 @@ from src.control.agents.prompts import filter_parsing
 from src.core.exceptions import NotFoundError, ServiceUnavailableError, UnprocessableError
 from src.core.services import matching_service, scoring_rules
 from src.core.services.audit_service import log_event
-from src.core.services.query_helpers import skill_clause
 from src.core.services.scoring_rules import Weights
 from src.data.clients.postgres import AsyncSessionLocal
 from src.data.models.postgres.audit_log import AuditLog
 from src.data.models.postgres.candidate import Candidate
-from src.data.models.postgres.job import Job
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
-from src.data.models.postgres.resume_extraction import ResumeExtraction
 from src.data.models.postgres.scoring_config import ScoringConfig
+from src.data.repositories import jd_repository, shortlist_repository
 from src.handlers.http_clients.llm_client import LLMError, llm
 
 logger = logging.getLogger("talentiq.shortlist")
@@ -85,42 +82,12 @@ async def list_entries(
     stored = await matching_service.load_weights(db, job_id) if job_id else Weights()
     weights = preview_weights or stored
 
-    query = (
-        select(MatchingShortlisting, Candidate, ResumeExtraction.skills)
-        .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-        .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == MatchingShortlisting.resume_id)
-        .join(Job, Job.id == MatchingShortlisting.job_id)
-        .where(MatchingShortlisting.total_score.is_not(None), Job.deleted_at.is_(None))
+    rows = await shortlist_repository.find_scored_rows(
+        db, job_id=job_id, include_unranked=include_unranked, status_filter=status_filter, skill=skill,
+        skills=skills or [], education=education, location=location,
+        category=normalize_category(category) if category else category,
+        min_experience=min_experience, max_experience=max_experience, search=search,
     )
-    if job_id:
-        query = query.where(MatchingShortlisting.job_id == job_id)
-    if not include_unranked:
-        # Latest run, plus anyone already shortlisted, shared or reviewed for this job.
-        query = query.where(MatchingShortlisting.rank.is_not(None)
-                            | (MatchingShortlisting.status != CandidateStatus.SOURCED))
-    if status_filter:
-        query = query.where(MatchingShortlisting.status == status_filter)
-    if skill:
-        query = query.where(skill_clause(ResumeExtraction.skills, skill))
-    for name in skills or []:
-        if name.strip():
-            query = query.where(skill_clause(ResumeExtraction.skills, name.strip()))
-    if education:
-        query = query.where(cast(ResumeExtraction.education, String).ilike(f"%{education.strip()}%"))
-    if location:
-        query = query.where(Candidate.location.ilike(f"%{location}%"))
-    if category:
-        query = query.where(Candidate.category == normalize_category(category))
-    if min_experience is not None:
-        query = query.where(Candidate.total_years_experience >= min_experience)
-    if max_experience is not None:
-        query = query.where(Candidate.total_years_experience <= max_experience)
-    if search:
-        pattern = f"%{search}%"
-        query = query.where(Candidate.name.ilike(pattern) | Candidate.email.ilike(pattern)
-                            | Candidate.current_title.ilike(pattern))
-
-    rows = (await db.execute(query)).all()
 
     items = []
     for row, candidate, skills in rows:
@@ -170,24 +137,20 @@ async def apply_weights(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, 
         weights.validate()
     except ValueError as exc:
         raise UnprocessableError(str(exc)) from exc
-    job = await db.get(Job, job_id)
+    job = await shortlist_repository.get_job(db, job_id)
     if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
 
-    config = (await db.execute(select(ScoringConfig).where(ScoringConfig.job_id == job_id))).scalar_one_or_none()
+    config = await jd_repository.find_scoring_config(db, job_id)
     if config is None:
         config = ScoringConfig(job_id=job_id, created_by=user.id)
-        db.add(config)
+        jd_repository.save_scoring_config(db, config)
     else:
         config.updated_by = user.id
     config.skill_pct, config.role_pct = weights.skill, weights.role
     config.exp_pct, config.edu_pct, config.total_pct = weights.exp, weights.edu, 100
 
-    rows = list((await db.execute(
-        select(MatchingShortlisting, Candidate)
-        .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-        .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.rank.is_not(None))
-    )).all())
+    rows = await shortlist_repository.find_ranked_rows(db, job_id)
     ranked = []
     for row, candidate in rows:
         row.total_score = scoring_rules.total_score(
@@ -213,10 +176,8 @@ async def _write_explanations(job_id: uuid.UUID, row_ids: list[uuid.UUID], weigh
     """Fallback AI summary for shortlisted candidates the scoring call left without one (best effort)."""
     try:
         async with AsyncSessionLocal() as db:
-            job = await db.get(Job, job_id)
-            rows = list((await db.execute(
-                select(MatchingShortlisting).where(MatchingShortlisting.id.in_(row_ids))
-            )).scalars())
+            job = await shortlist_repository.get_job(db, job_id)
+            rows = await shortlist_repository.find_rows_by_ids(db, row_ids)
             await matching_service.generate_explanations(db, job, rows, weights)
             await db.commit()
     except Exception:
@@ -235,7 +196,7 @@ async def shortlist_top_k(
     changed. Everyone else in this job's results is set to shortlisted or back to matched.
     Returns (shortlisted, number of candidates that passed the filters).
     """
-    job = await db.get(Job, job_id)
+    job = await shortlist_repository.get_job(db, job_id)
     if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     entries, total, weights = await list_entries(
@@ -244,9 +205,7 @@ async def shortlist_top_k(
         education=filters.education, skills=filters.must_have_skills, min_score=min_score,
         sort="score", descending=True, limit=10_000,
     )
-    rows = (await db.execute(
-        select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id)
-    )).scalars().all()
+    rows = await shortlist_repository.find_rows_by_job(db, job_id)
     open_rows = [r for r in rows if r.shared_to is None
                  and r.status in (CandidateStatus.SOURCED, CandidateStatus.SHORTLISTED)]
     # The best K among those that can still change; candidates already shared or decided don't use up places.
@@ -285,10 +244,7 @@ def _detail(row: AuditLog) -> str | None:
 
 
 async def get_run_status(db: AsyncSession, run_id: str) -> RunStatus:
-    rows = (await db.execute(
-        select(AuditLog).where(AuditLog.input_data.like(f'%"run_id": "{run_id}"%'))
-        .order_by(AuditLog.created_at, AuditLog.id)
-    )).scalars().all()
+    rows = await shortlist_repository.find_run_events(db, run_id)
     if not rows:
         raise NotFoundError("Run not found.")
 
@@ -325,23 +281,10 @@ async def list_logs(
     category: str | None, since: datetime | None, until: datetime | None,
     only_stages: bool, limit: int, offset: int,
 ) -> tuple[list[LogEntry], int]:
-    query = select(AuditLog)
-    if job_id:
-        query = query.where(AuditLog.job_id == job_id)
-    if stage:
-        query = query.where(AuditLog.stage == stage)
-    elif only_stages:
-        query = query.where(AuditLog.stage.is_not(None))
-    if category:
-        query = query.where(cast(AuditLog.action_category, String) == category)
-    if since:
-        query = query.where(AuditLog.created_at >= since)
-    if until:
-        query = query.where(AuditLog.created_at <= until)
-    total = (await db.execute(select(func.count()).select_from(query.subquery()))).scalar_one()
-    rows = (await db.execute(
-        query.order_by(AuditLog.created_at.desc(), AuditLog.id).limit(limit).offset(offset)
-    )).scalars().all()
+    rows, total = await shortlist_repository.search_logs(
+        db, job_id=job_id, stage=stage, category=category, since=since, until=until,
+        only_stages=only_stages, limit=limit, offset=offset,
+    )
     return [
         LogEntry(id=r.id, at=r.created_at, user_id=r.user_id, job_id=r.job_id,
                  stage=r.stage.value if r.stage else None,

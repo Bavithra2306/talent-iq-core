@@ -61,20 +61,13 @@ def format_time(moment: datetime) -> str:
 
 async def _used_today_from_db() -> int:
     """Texts embedded today according to the database (survives restarts)."""
-    from sqlalchemy import func, select
-
     from src.data.clients.postgres import AsyncSessionLocal
-    from src.data.models.postgres.job_embedding import JobEmbedding
-    from src.data.models.postgres.resume_embedding import ResumeEmbedding
+    from src.data.repositories import job_embedding_repository, resume_repository
 
     start = datetime.combine(_quota_today(), time(0), QUOTA_TZ)
     async with AsyncSessionLocal() as db:
-        resumes = (await db.execute(
-            select(func.count()).where(ResumeEmbedding.created_at >= start)
-        )).scalar_one()
-        jobs = (await db.execute(
-            select(func.count()).where(func.coalesce(JobEmbedding.updated_at, JobEmbedding.created_at) >= start)
-        )).scalar_one()
+        resumes = await resume_repository.count_embeddings_since(db, start)
+        jobs = await job_embedding_repository.count_since(db, start)
     return resumes + 3 * jobs  # a job embeds up to three texts
 
 

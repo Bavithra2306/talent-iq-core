@@ -1,7 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Cookie, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser, Role, require_roles
@@ -20,7 +19,6 @@ from src.api.rest.schemas.shortlist_schema import (
 from src.constants.enums import CandidateStatus
 from src.core.services import review_service
 from src.data.clients.postgres import get_db
-from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 
 ReviewRouter = APIRouter(tags=["Review"])
 
@@ -104,10 +102,4 @@ async def schedule_all(body: ScheduleRequest, db: AsyncSession = Depends(get_db)
 async def review_history(job_id: uuid.UUID, db: AsyncSession = Depends(get_db),
                          user: CurrentUser = Depends(reviewers)):
     """Timeline of a job's shortlist: shared, notes, approvals, rejections, interviews (oldest first)."""
-    if user.role == Role.HIRING_MANAGER:
-        shared = (await db.execute(select(MatchingShortlisting.id).where(
-            MatchingShortlisting.job_id == job_id, MatchingShortlisting.shared_to == user.id).limit(1)
-        )).scalar_one_or_none()
-        if shared is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "Nothing was shared with you for this job.")
     return await review_service.history(db, user, job_id)

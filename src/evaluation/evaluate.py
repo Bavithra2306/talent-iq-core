@@ -32,17 +32,11 @@ import random
 import uuid
 from pathlib import Path
 
-from sqlalchemy import select
-
 from src.constants.categories import normalize_category
-from src.constants.enums import ActionCategory, PipelineStage
 from src.data.clients.postgres import AsyncSessionLocal
-from src.data.models.postgres.audit_log import AuditLog
 from src.data.models.postgres.candidate import Candidate
-from src.data.models.postgres.document import Document
-from src.data.models.postgres.job import Job
-from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.data.repositories import evaluation_repository
 
 OUT = Path("evaluation")
 TOP = 10
@@ -72,12 +66,8 @@ def _roles(extraction: ResumeExtraction | None) -> str:
 
 async def answer_key_template(job_id: uuid.UUID) -> None:
     async with AsyncSessionLocal() as db:
-        job = await db.get(Job, job_id)
-        rows = (await db.execute(
-            select(Candidate, ResumeExtraction)
-            .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-            .where(Candidate.category == normalize_category(job.category))
-        )).all()
+        job = await evaluation_repository.get_job(db, job_id)
+        rows = await evaluation_repository.find_category_resumes(db, normalize_category(job.category))
     random.shuffle(rows)
     _write(OUT / f"answer_key_{job_id}.csv",
            ["candidate_id", "recruiter_rank", "current_title", "years", "skills", "roles", "education"],
@@ -93,12 +83,7 @@ async def top10(job_id: uuid.UUID, key_path: str) -> None:
                  key=lambda r: int(r["recruiter_rank"]))[:TOP]
     expected = {r["candidate_id"] for r in key}
     async with AsyncSessionLocal() as db:
-        ours = (await db.execute(
-            select(MatchingShortlisting, Candidate)
-            .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-            .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.rank.is_not(None))
-            .order_by(MatchingShortlisting.rank).limit(TOP)
-        )).all()
+        ours = await evaluation_repository.find_top_ranked(db, job_id, TOP)
     if len(expected) < TOP:
         print(f"Warning: the answer key ranks only {len(expected)} people.")
     hits = [(row, c) for row, c in ours if str(c.id) in expected]
@@ -122,12 +107,7 @@ def _values(c: Candidate, e: ResumeExtraction) -> dict:
 
 async def fields_template(limit: int) -> None:
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
-            select(Candidate, ResumeExtraction, Document)
-            .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-            .join(Document, Document.id == Candidate.current_resume_id)
-            .order_by(Document.created_at.desc()).limit(limit)
-        )).all()
+        rows = await evaluation_repository.find_latest_resumes(db, limit)
     _write(OUT / "fields_check.csv", ["candidate_id", "file", *FIELDS],
            [[c.id, d.original_filename, *_values(c, e).values()] for c, e, d in rows])
 
@@ -146,11 +126,8 @@ def _same(field: str, a: str, b: str) -> bool:
 async def fields(key_path: str) -> None:
     key = _read(key_path)
     async with AsyncSessionLocal() as db:
-        found = {str(c.id): _values(c, e) for c, e in (await db.execute(
-            select(Candidate, ResumeExtraction)
-            .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-            .where(Candidate.id.in_([uuid.UUID(r["candidate_id"]) for r in key]))
-        )).all()}
+        found = {str(c.id): _values(c, e) for c, e in await evaluation_repository.find_resumes_by_candidates(
+            db, [uuid.UUID(r["candidate_id"]) for r in key])}
     right = {f: 0 for f in FIELDS}
     for row in key:
         ours = found.get(row["candidate_id"], {})
@@ -169,12 +146,7 @@ async def fields(key_path: str) -> None:
 
 async def timing() -> None:
     async with AsyncSessionLocal() as db:
-        logs = (await db.execute(
-            select(AuditLog, Job.title).join(Job, Job.id == AuditLog.job_id)
-            .where(AuditLog.action_category == ActionCategory.SHORTLISTING,
-                   AuditLog.stage.in_([PipelineStage.SHORTLISTED, PipelineStage.PARTLY_COMPLETED]))
-            .order_by(AuditLog.created_at.desc()).limit(15)
-        )).all()
+        logs = await evaluation_repository.find_latest_run_logs(db, 15)
     print(f"{'when':20} {'job':30} {'considered':>10} {'scored':>7} {'from cache':>10} {'seconds':>8}")
     for log, title in logs:
         try:

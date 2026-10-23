@@ -12,8 +12,6 @@ import logging
 import re
 import uuid
 
-from sqlalchemy import select
-
 from src.api.rest.dependencies import CurrentUser
 from src.api.rest.schemas.sourcing_schema import SourceInfo, SourcingRunRequest
 from src.config.settings import settings
@@ -23,7 +21,7 @@ from src.core.services import resume_service
 from src.core.services.audit_service import log_event
 from src.core.services.friendly_errors import friendly_error
 from src.data.clients.postgres import AsyncSessionLocal
-from src.data.models.postgres.document import Document
+from src.data.repositories import sourcing_repository
 from src.handlers.http_clients.sourcing.keywords import Resolved, resolve
 from src.handlers.http_clients.sourcing.sources import (
     github,
@@ -97,10 +95,7 @@ _LIVECAREER = re.compile(r"^(?:kaggle_[a-z0-9-]+|hf_resumes)_(\d{6,})\.pdf$")
 async def _skip_known_livecareer(files: list) -> list:
     """Kaggle and the Hugging Face "opensporks/resumes" set hold the same resumes (same IDs).
     They have no emails, so drop any ID we already have, from either source or this run."""
-    async with AsyncSessionLocal() as db:
-        names = (await db.execute(
-            select(Document.original_filename).where(Document.source_site.in_(("kaggle", "huggingface")))
-        )).scalars().all()
+    names = await sourcing_repository.find_filenames_by_sites(("kaggle", "huggingface"))
     seen = {m.group(1) for n in names if n and (m := _LIVECAREER.match(n))}
     kept = []
     for f in files:
@@ -125,10 +120,7 @@ async def _known_ids(source: str) -> set[str]:
     """GitHub logins / Stack Exchange user ids we already have, so a new run skips them.
     (Their profile PDFs are rebuilt each time, so the file itself never looks like a duplicate.)"""
     pattern = _PROFILE_NAMES[source]
-    async with AsyncSessionLocal() as db:
-        names = (await db.execute(
-            select(Document.original_filename).where(Document.source_site == source)
-        )).scalars().all()
+    names = await sourcing_repository.find_filenames_by_sites((source,))
     return {m.group(1) for n in names if n and (m := pattern.match(n))}
 
 

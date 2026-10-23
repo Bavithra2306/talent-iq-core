@@ -5,6 +5,7 @@ from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.core.exceptions.base import UnprocessableError
 from src.core.services import audit_service
 from src.core.services.friendly_errors import friendly_error
+from src.data.repositories import audit_repository
 from src.handlers.http_clients.llm_client import LLMError
 from src.handlers.http_clients.sourcing.fetcher import FetchError
 
@@ -38,6 +39,6 @@ async def test_logging_with_plain_strings_does_not_crash(monkeypatch):
     def no_database():
         raise RuntimeError("no database in unit tests")
 
-    monkeypatch.setattr(audit_service, "AsyncSessionLocal", no_database)
+    monkeypatch.setattr(audit_repository, "AsyncSessionLocal", no_database)
     # Before the fix this raised "'str' object has no attribute 'value'" and ended the whole run.
     await audit_service.log_event(user_id=None, category="scoring", action="scoring_failed", stage="failed")

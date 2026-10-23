@@ -1,6 +1,6 @@
 """Audit / stage logging. Every event is written to audit_logs and to the server log.
 
-Uses its own session so failure events are kept even when the caller's
+The repository writes it in its own session so failure events are kept even when the caller's
 transaction is rolled back.
 """
 
@@ -10,8 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 from src.constants.enums import Action, ActionCategory, PipelineStage
-from src.data.clients.postgres import AsyncSessionLocal
-from src.data.models.postgres.audit_log import AuditLog
+from src.data.repositories import audit_repository
 
 logger = logging.getLogger("talentiq.audit")
 
@@ -68,23 +67,11 @@ async def log_event(
     )
 
     try:
-        async with AsyncSessionLocal() as db:
-            db.add(
-                AuditLog(
-                    user_id=user_id,
-                    action_category=category,
-                    actions=action,
-                    stage=stage,
-                    job_id=job_id,
-                    input_data=_to_text(input_data),
-                    output_data=_to_text(output_data),
-                    start_time=start_time,
-                    end_time=end_time,
-                    duration=duration,
-                    created_by=user_id,
-                )
-            )
-            await db.commit()
+        await audit_repository.add_event(
+            user_id=user_id, category=category, action=action, stage=stage, job_id=job_id,
+            input_data=_to_text(input_data), output_data=_to_text(output_data),
+            start_time=start_time, end_time=end_time, duration=duration,
+        )
     except Exception:
         # Logging must never break the request.
         logger.exception("Failed to write audit log")

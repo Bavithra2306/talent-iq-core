@@ -7,7 +7,6 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser, Role
@@ -16,9 +15,8 @@ from src.core.exceptions import NotFoundError
 from src.core.services import matching_service
 from src.core.services.audit_service import log_event, utcnow
 from src.core.services.friendly_errors import friendly_error
-from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.job import Job
-from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
+from src.data.repositories import export_repository, jd_repository
 
 ExportFormat = Literal["csv", "xlsx"]
 ExportScope = Literal["shortlisted", "ranked", "all"]
@@ -53,16 +51,12 @@ def _skill_lists(explanation: dict | None) -> tuple[str, str]:
 
 
 async def _rows(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, scope: ExportScope):
-    query = (select(MatchingShortlisting, Candidate)
-             .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-             .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.total_score.is_not(None)))
-    if user.role == Role.HIRING_MANAGER:
-        query = query.where(MatchingShortlisting.shared_to == user.id)  # only what was shared with them
-    elif scope == "shortlisted":
-        query = query.where(MatchingShortlisting.status.in_(REVIEWED))
-    elif scope == "ranked":
-        query = query.where(MatchingShortlisting.rank.is_not(None))
-    rows = (await db.execute(query)).all()
+    rows = await export_repository.find_scored_rows(
+        db, job_id,
+        shared_to=user.id if user.role == Role.HIRING_MANAGER else None,  # only what was shared with them
+        statuses=REVIEWED if user.role != Role.HIRING_MANAGER and scope == "shortlisted" else None,
+        ranked_only=user.role != Role.HIRING_MANAGER and scope == "ranked",
+    )
     rows.sort(key=lambda rc: (rc[0].rank is None, rc[0].rank or 0, -float(rc[0].total_score)))
     return rows
 
@@ -139,7 +133,7 @@ def _xlsx(table: list[list], job: Job, weights: dict, scope: str, exported_by: s
 async def export_shortlist(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID,
                            fmt: ExportFormat, scope: ExportScope) -> tuple[bytes, str, str]:
     """Returns (file bytes, media type, filename)."""
-    job = await db.get(Job, job_id)
+    job = await jd_repository.get_job(db, job_id)
     if job is None:
         raise NotFoundError("Job not found.")
     started = utcnow()

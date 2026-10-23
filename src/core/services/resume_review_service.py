@@ -8,7 +8,6 @@ and saved like any other resume) or deletes it. These files are documents with
 import logging
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser
@@ -19,9 +18,8 @@ from src.core.services import resume_service
 from src.core.services.audit_service import log_event
 from src.core.services.document_parser import parser
 from src.data.clients.storage import storage
-from src.data.models.postgres.audit_log import AuditLog
-from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.document import Document
+from src.data.repositories import resume_review_repository
 from src.handlers.http_clients.llm_client import LLMError
 
 logger = logging.getLogger("talentiq.resumes")
@@ -29,27 +27,18 @@ logger = logging.getLogger("talentiq.resumes")
 
 
 async def _get(db: AsyncSession, document_id: uuid.UUID) -> Document:
-    document = await db.get(Document, document_id)
+    document = await resume_review_repository.get_document(db, document_id)
     if document is None or document.document_type != resume_service.DOC_TYPE_REVIEW:
         raise NotFoundError("This file is not waiting for review.")
     return document
 
 
 async def _reason(db: AsyncSession, document_id: uuid.UUID) -> str | None:
-    row = (await db.execute(
-        select(AuditLog.output_data)
-        .where(AuditLog.actions == Action.EXTRACTION_FAILED,
-               AuditLog.input_data.like(f'%"document_id": "{document_id}"%'))
-        .order_by(AuditLog.created_at.desc()).limit(1)
-    )).scalar_one_or_none()
-    return row
+    return await resume_review_repository.latest_failure_reason(db, document_id)
 
 
 async def list_files(db: AsyncSession) -> list[ReviewFile]:
-    documents = (await db.execute(
-        select(Document).where(Document.document_type == resume_service.DOC_TYPE_REVIEW)
-        .order_by(Document.created_at.desc())
-    )).scalars().all()
+    documents = await resume_review_repository.list_documents_of_type(db, resume_service.DOC_TYPE_REVIEW)
     return [
         ReviewFile(
             document_id=d.id, filename=d.original_filename or "file",
@@ -91,9 +80,7 @@ async def accept_as_resume(db: AsyncSession, user: CurrentUser, document_id: uui
     document.document_type = resume_service.DOC_TYPE_RESUME
     await resume_service._save_resume(db, user.id, item, parsed, result, model)
     await db.commit()
-    candidate = (await db.execute(
-        select(Candidate).where(Candidate.current_resume_id == document.id)
-    )).scalar_one()
+    candidate = await resume_review_repository.get_candidate_by_resume(db, document.id)
     await log_event(
         user_id=user.id, category=ActionCategory.EXTRACTION, action=Action.EXTRACTION_COMPLETED,
         input_data={"document_id": str(document.id), "filename": document.original_filename,
@@ -109,7 +96,7 @@ async def delete_file(db: AsyncSession, user: CurrentUser, document_id: uuid.UUI
     """The recruiter confirms it is not a resume: remove the record and the stored file."""
     document = await _get(db, document_id)
     key, name = document.file_path, document.original_filename
-    await db.delete(document)
+    await resume_review_repository.delete_document(db, document)
     await db.commit()
     try:
         storage.delete(key)

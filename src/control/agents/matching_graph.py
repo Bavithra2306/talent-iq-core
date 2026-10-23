@@ -65,7 +65,7 @@ def _seconds(state: MatchingState) -> float:
 
 async def collect(state: MatchingState, config: RunnableConfig) -> dict:
     db, progress = _db(config), svc.progress[state["run_id"]]
-    job = await db.get(Job, state["job_id"])
+    job = await svc.get_job(db, state["job_id"])
     weights = await svc.load_weights(db, state["job_id"])
     await _stage(state, PipelineStage.COLLECTING, job_category=job.category)
     vectors = await svc.job_vectors(db, job, state["user_id"])

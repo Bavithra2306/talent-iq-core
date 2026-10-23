@@ -5,23 +5,18 @@ import time
 import uuid
 from typing import Literal
 
-from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.schemas.candidate_schema import CandidateDetail, CandidateListItem, JobStatusItem
 from src.api.rest.schemas.ingestion_schema import BatchEvent, BatchStatus, RejectedFile
 from src.constants.categories import normalize_category
-from src.constants.enums import CandidateStatus, PipelineStage
+from src.constants.enums import PipelineStage
 from src.core.exceptions import NotFoundError
 from src.core.services import resume_service
-from src.core.services.query_helpers import skill_clause
 from src.data.clients.storage import storage
 from src.data.models.postgres.audit_log import AuditLog
-from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.document import Document
-from src.data.models.postgres.job import Job
-from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
-from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.data.repositories import candidate_repository
 
 SortField = Literal["date_added", "name", "experience"]
 
@@ -41,11 +36,7 @@ def _detail(row: AuditLog) -> str | None:
 
 
 async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
-    rows = (await db.execute(
-        select(AuditLog)
-        .where(AuditLog.input_data.like(f'%"batch_id": "{batch_id}"%'))
-        .order_by(AuditLog.created_at, AuditLog.id)
-    )).scalars().all()
+    rows = await candidate_repository.find_batch_events(db, batch_id)
     if not rows:
         raise NotFoundError("Batch not found.")
 
@@ -99,63 +90,18 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
 
 # ---------- candidates ----------
 
-def _apply_filters(query, *, category, search, location, skill, min_experience,
-                   max_experience, status_filter, source_site):
-    if category:
-        query = query.where(Candidate.category == normalize_category(category))
-    if search:
-        pattern = f"%{search}%"
-        query = query.where(or_(Candidate.name.ilike(pattern), Candidate.email.ilike(pattern),
-                                Candidate.current_title.ilike(pattern), Candidate.location.ilike(pattern),
-                                cast(ResumeExtraction.skills, String).ilike(pattern)))
-    if location:
-        query = query.where(Candidate.location.ilike(f"%{location}%"))
-    if skill:
-        query = query.where(skill_clause(ResumeExtraction.skills, skill))
-    if min_experience is not None:
-        query = query.where(Candidate.total_years_experience >= min_experience)
-    if max_experience is not None:
-        query = query.where(Candidate.total_years_experience <= max_experience)
-    if status_filter == "new":
-        # Not matched to any job yet.
-        query = query.where(~select(MatchingShortlisting.id)
-                            .where(MatchingShortlisting.candidate_id == Candidate.id).exists())
-    elif status_filter:
-        # Has this status for at least one job.
-        query = query.where(select(MatchingShortlisting.id).where(
-            MatchingShortlisting.candidate_id == Candidate.id,
-            MatchingShortlisting.status == CandidateStatus(status_filter),
-        ).exists())
-    if source_site:
-        query = query.where(Document.source_site == source_site)
-    return query
-
-
 async def list_candidates(
     db: AsyncSession, *, category=None, search=None, location=None, skill=None,
     min_experience=None, max_experience=None, status_filter: str | None = None,
     source_site=None, sort: SortField = "date_added", descending: bool = True,
     limit: int = 20, offset: int = 0,
 ) -> tuple[list[CandidateListItem], int]:
-    base = (
-        select(Candidate, ResumeExtraction.skills, Document.source_site)
-        .join(Document, Document.id == Candidate.current_resume_id)
-        .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
+    rows, total = await candidate_repository.search(
+        db, category=normalize_category(category) if category else category, search=search, location=location,
+        skill=skill, min_experience=min_experience, max_experience=max_experience,
+        status_filter=status_filter, source_site=source_site, sort_column=sort, descending=descending,
+        limit=limit, offset=offset,
     )
-    base = _apply_filters(
-        base, category=category, search=search, location=location, skill=skill,
-        min_experience=min_experience, max_experience=max_experience,
-        status_filter=status_filter, source_site=source_site,
-    )
-    total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-
-    column = {
-        "date_added": Candidate.created_at,
-        "name": func.lower(Candidate.name),
-        "experience": Candidate.total_years_experience,
-    }[sort]
-    ordering = column.desc().nulls_last() if descending else column.asc().nulls_last()
-    rows = (await db.execute(base.order_by(ordering, Candidate.id).limit(limit).offset(offset))).all()
 
     statuses = await job_statuses(db, [c.id for c, _, _ in rows])
     items = []
@@ -172,15 +118,9 @@ async def job_statuses(db: AsyncSession, candidate_ids: list[uuid.UUID]) -> dict
     """Each candidate's status for every job they were matched to, best score first."""
     if not candidate_ids:
         return {}
-    rows = await db.execute(
-        select(MatchingShortlisting.candidate_id, MatchingShortlisting.job_id, Job.title,
-               MatchingShortlisting.status, MatchingShortlisting.total_score)
-        .join(Job, Job.id == MatchingShortlisting.job_id)
-        .where(MatchingShortlisting.candidate_id.in_(candidate_ids), Job.deleted_at.is_(None))
-        .order_by(MatchingShortlisting.total_score.desc().nulls_last())
-    )
+    rows = await candidate_repository.find_job_status_rows(db, candidate_ids)
     result: dict[uuid.UUID, list[JobStatusItem]] = {}
-    for candidate_id, job_id, title, status_value, score in rows.all():
+    for candidate_id, job_id, title, status_value, score in rows:
         result.setdefault(candidate_id, []).append(JobStatusItem(
             job_id=job_id, job_title=title, status=status_value,
             total_score=float(score) if score is not None else None,
@@ -189,12 +129,7 @@ async def job_statuses(db: AsyncSession, candidate_ids: list[uuid.UUID]) -> dict
 
 
 async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> CandidateDetail:
-    row = (await db.execute(
-        select(Candidate, ResumeExtraction, Document)
-        .join(Document, Document.id == Candidate.current_resume_id)
-        .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-        .where(Candidate.id == candidate_id)
-    )).first()
+    row = await candidate_repository.find_detail_row(db, candidate_id)
     if row is None:
         raise NotFoundError("Candidate not found.")
     candidate, extraction, document = row
@@ -211,17 +146,14 @@ async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> CandidateD
 
 
 async def category_counts(db: AsyncSession) -> list[dict]:
-    rows = await db.execute(
-        select(Candidate.category, func.count()).group_by(Candidate.category).order_by(func.count().desc())
-    )
-    return [{"category": c, "count": n} for c, n in rows.all()]
+    return [{"category": c, "count": n} for c, n in await candidate_repository.count_by_category(db)]
 
 
 async def get_resume_file(db: AsyncSession, candidate_id: uuid.UUID) -> tuple[Document, bytes]:
-    candidate = await db.get(Candidate, candidate_id)
+    candidate = await candidate_repository.get_candidate(db, candidate_id)
     if candidate is None:
         raise NotFoundError("Candidate not found.")
-    document = await db.get(Document, candidate.current_resume_id)
+    document = await candidate_repository.get_document(db, candidate.current_resume_id)
     if document is None:
         raise NotFoundError("Resume file not found.")
     return document, storage.read(document.file_path)

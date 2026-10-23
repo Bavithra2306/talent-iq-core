@@ -18,7 +18,6 @@ import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser
@@ -30,7 +29,6 @@ from src.constants.enums import (
     CandidateStatus,
     EmbeddingKind,
     FileType,
-    JobStatus,
     PipelineStage,
 )
 from src.control.agents.prompts import resume_check as check_prompt
@@ -43,10 +41,9 @@ from src.data.clients.postgres import AsyncSessionLocal
 from src.data.clients.storage import storage
 from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.document import Document
-from src.data.models.postgres.job import Job
-from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 from src.data.models.postgres.resume_embedding import ResumeEmbedding
 from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.data.repositories import resume_repository
 from src.handlers.http_clients import embedding_client
 from src.handlers.http_clients.embedding_client import EmbeddingError, EmbeddingQuotaExceeded
 from src.handlers.http_clients.llm_client import LLMError, llm
@@ -172,17 +169,9 @@ async def accept_uploads(
     # Files already in the system: skip finished ones, re-run ones that never completed.
     existing = {}
     if candidates:
-        rows = await db.execute(
-            select(Document).where(Document.file_hash.in_([c[2] for c in candidates]))
-        )
-        existing = {d.file_hash: d for d in rows.scalars()}
-        extracted_ids = set(
-            (await db.execute(
-                select(ResumeExtraction.resume_id).where(
-                    ResumeExtraction.resume_id.in_([d.id for d in existing.values()])
-                )
-            )).scalars()
-        ) if existing else set()
+        existing = {d.file_hash: d for d in await resume_repository.find_documents_by_hashes(db, [c[2] for c in candidates])}
+        extracted_ids = (await resume_repository.find_extracted_resume_ids(db, [d.id for d in existing.values()])
+                         if existing else set())
 
     items: list[BatchItem] = []
     for upload, file_type, digest in candidates:
@@ -212,8 +201,7 @@ async def accept_uploads(
             file_size=len(upload.data),
             file_path=key,
         )
-        db.add(document)
-        await db.flush()
+        await resume_repository.add_document(db, document)
         items.append(BatchItem(document.id, name, key))
     await db.commit()
 
@@ -265,7 +253,7 @@ async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, ite
         # The AI thinks it is not a resume: keep the file for the recruiter to check.
         try:
             async with AsyncSessionLocal() as db:
-                document = await db.get(Document, item.document_id)
+                document = await resume_repository.get_document(db, item.document_id)
                 if document is not None:
                     document.document_type = DOC_TYPE_REVIEW
                     await db.commit()
@@ -293,21 +281,12 @@ async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) 
         task.add_done_callback(_background.discard)
 
 
-def _failed_resumes_query():
-    """Resume files stored but never read into a candidate (the AI or a reader failed).
-    Files waiting for review are not resumes yet, so they are not included."""
-    return select(Document).where(
-        Document.document_type == DOC_TYPE_RESUME,
-        ~select(ResumeExtraction.id).where(ResumeExtraction.resume_id == Document.id).exists(),
-    )
-
-
 def _running_ids() -> set[uuid.UUID]:
     return {i.document_id for items in _in_flight.values() for i in items}
 
 
 async def count_failed(db: AsyncSession) -> int:
-    rows = (await db.execute(_failed_resumes_query())).scalars().all()
+    rows = await resume_repository.find_unread_resume_documents(db, DOC_TYPE_RESUME)
     running = _running_ids()
     return sum(d.id not in running for d in rows)
 
@@ -315,7 +294,7 @@ async def count_failed(db: AsyncSession) -> int:
 async def retry_failed(db: AsyncSession, user: CurrentUser) -> UploadResult:
     """Run every failed resume through the pipeline again (one new batch)."""
     running = _running_ids()
-    documents = [d for d in (await db.execute(_failed_resumes_query())).scalars() if d.id not in running]
+    documents = [d for d in await resume_repository.find_unread_resume_documents(db, DOC_TYPE_RESUME) if d.id not in running]
     if not documents:
         return UploadResult(batch_id=None, accepted=[], rejected=[])
     items = [BatchItem(d.id, d.original_filename or d.stored_filename, d.file_path) for d in documents]
@@ -446,10 +425,7 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
 async def _reopen_rejected(db: AsyncSession, candidate_id: uuid.UUID, user_id: uuid.UUID) -> None:
     """A rejection was about the old resume. When the person sends a new one, their rejected entries go back to
     matched (not shared) with a note, so a recruiter can shortlist them again. Approved entries are left alone."""
-    rows = (await db.execute(select(MatchingShortlisting).where(
-        MatchingShortlisting.candidate_id == candidate_id,
-        MatchingShortlisting.status == CandidateStatus.REJECTED,
-    ))).scalars().all()
+    rows = await resume_repository.find_rejected_entries(db, candidate_id)
     note = "Resume updated after this candidate was rejected; they can be shortlisted again."
     for row in rows:
         row.status = CandidateStatus.SOURCED
@@ -461,7 +437,7 @@ async def _reopen_rejected(db: AsyncSession, candidate_id: uuid.UUID, user_id: u
 async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, parsed: ParsedDocument,
                        result: prompt.ExtractedResume, model: str) -> bool:
     """Save one resume. Returns True for a new person, False when it updated someone we had."""
-    document = await db.get(Document, item.document_id)
+    document = await resume_repository.get_document(db, item.document_id)
     if parsed.is_scanned and document.file_type != FileType.SCANNED_PDF:
         document.file_type = FileType.SCANNED_PDF
 
@@ -472,15 +448,9 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
 
     candidate = None
     if email:
-        candidate = (await db.execute(
-            select(Candidate).where(func.lower(Candidate.email) == email).limit(1)
-        )).scalar_one_or_none()
+        candidate = await resume_repository.find_candidate_by_email(db, email)
     if candidate is None and len(_digits(phone)) >= 7:
-        candidate = (await db.execute(
-            select(Candidate).where(
-                func.regexp_replace(Candidate.contact, r"\D", "", "g") == _digits(phone)
-            ).limit(1)
-        )).scalar_one_or_none()
+        candidate = await resume_repository.find_candidate_by_phone_digits(db, _digits(phone))
 
     fields = {
         "name": _short(result.name, 120),
@@ -497,7 +467,7 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
             **fields, current_resume_id=document.id,
             status=CandidateStatus.SOURCED, created_by=user_id,
         )
-        db.add(candidate)
+        resume_repository.add_candidate(db, candidate)
     else:
         # A newer resume of a known person: keep their record, refresh what the new resume says.
         for key, value in fields.items():
@@ -506,9 +476,9 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
         candidate.current_resume_id = document.id
         candidate.updated_by = user_id
         await _reopen_rejected(db, candidate.id, user_id)
-    await db.flush()
+    await resume_repository.flush(db)
 
-    db.add(ResumeExtraction(
+    resume_repository.add_extraction(db, ResumeExtraction(
         resume_id=document.id,
         skills=skills,
         total_experience_years=years,
@@ -518,7 +488,7 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
         model_version=model,
         created_by=user_id,
     ))
-    await db.flush()
+    await resume_repository.flush(db)
     return created
 
 
@@ -537,13 +507,7 @@ _embed_lock = asyncio.Lock()
 
 async def count_missing_embeddings() -> int:
     async with AsyncSessionLocal() as db:
-        return (await db.execute(
-            select(func.count(ResumeExtraction.id))
-            .join(Candidate, Candidate.current_resume_id == ResumeExtraction.resume_id)
-            .where(~select(ResumeEmbedding.id)
-                   .where(ResumeEmbedding.resume_id == ResumeExtraction.resume_id)
-                   .exists())
-        )).scalar_one()
+        return await resume_repository.count_missing_embeddings(db)
 
 
 async def _embed_in_background(batch_id: str, user_id: uuid.UUID) -> None:
@@ -597,19 +561,10 @@ async def embed_missing(rounds: int = 3, chunk_resumes: int = 25, pause_seconds:
     Returns how many resumes still lack embeddings afterwards.
     """
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
-            select(Candidate.id, Candidate.category, ResumeExtraction)
-            .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-            .where(~select(ResumeEmbedding.id)
-                   .where(ResumeEmbedding.resume_id == ResumeExtraction.resume_id)
-                   .exists())
-            .order_by(Candidate.created_at)
-        )).all()
+        rows = await resume_repository.find_resumes_missing_embeddings(db)
         # Categories that have an open job are made searchable first: the free daily
         # quota goes to resumes that can be matched today.
-        open_categories = set((await db.execute(
-            select(Job.category).where(Job.status == JobStatus.OPEN, Job.deleted_at.is_(None))
-        )).scalars())
+        open_categories = await resume_repository.find_open_job_categories(db)
     rows = sorted(rows, key=lambda r: r[1] not in open_categories)  # stable: oldest first within each group
 
     work = []  # (candidate_id, resume_id, skills text, roles text)
@@ -640,7 +595,7 @@ async def embed_missing(rounds: int = 3, chunk_resumes: int = 25, pause_seconds:
                 for candidate_id, resume_id, skills, roles in chunk:
                     for kind, text in ((EmbeddingKind.SKILL, skills), (EmbeddingKind.ROLE, roles)):
                         if text:
-                            db.add(ResumeEmbedding(
+                            resume_repository.add_embedding(db, ResumeEmbedding(
                                 candidate_id=candidate_id, resume_id=resume_id, kind=kind,
                                 vector=next(vectors), model_version=version,
                             ))

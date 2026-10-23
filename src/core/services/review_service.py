@@ -15,10 +15,9 @@ import json
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.rest.dependencies import CurrentUser
+from src.api.rest.dependencies import CurrentUser, Role
 from src.api.rest.schemas.shortlist_schema import ReviewEvent, ShareResult, ShortlistEntry
 from src.constants.enums import Action, ActionCategory, CandidateStatus
 from src.core.exceptions import ConflictError, NotFoundError, UnprocessableError
@@ -26,12 +25,9 @@ from src.core.services import matching_service
 from src.core.services.audit_service import log_event
 from src.core.services.shortlist_service import _entry
 from src.data.clients.storage import storage
-from src.data.models.postgres.audit_log import AuditLog
-from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.document import Document
-from src.data.models.postgres.job import Job
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
-from src.data.models.postgres.resume_extraction import ResumeExtraction
+from src.data.repositories import review_repository
 from src.handlers.http_clients.auth_client import find_user
 
 REVIEW_ACTIONS = (
@@ -48,11 +44,7 @@ async def _scheduled_at(db: AsyncSession, entry_ids: list[uuid.UUID]) -> dict[st
     """When each entry's interview was scheduled (kept in the audit log; status stays approved)."""
     if not entry_ids:
         return {}
-    rows = (await db.execute(
-        select(AuditLog.input_data, AuditLog.created_at)
-        .where(AuditLog.actions == Action.INTERVIEW_SCHEDULED)
-        .order_by(AuditLog.created_at)
-    )).all()
+    rows = await review_repository.find_interview_events(db)
     wanted = {str(i) for i in entry_ids}
     found: dict[str, datetime] = {}
     for data, at in rows:
@@ -65,7 +57,7 @@ async def _scheduled_at(db: AsyncSession, entry_ids: list[uuid.UUID]) -> dict[st
     return found
 
 async def _row(db: AsyncSession, entry_id: uuid.UUID) -> MatchingShortlisting:
-    row = await db.get(MatchingShortlisting, entry_id)
+    row = await review_repository.get_entry(db, entry_id)
     if row is None:
         raise NotFoundError("Shortlist entry not found.")
     return row
@@ -73,7 +65,7 @@ async def _row(db: AsyncSession, entry_id: uuid.UUID) -> MatchingShortlisting:
 
 async def _hm_row(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> MatchingShortlisting:
     """A row shared with this hiring manager (others get 404, not 403, to avoid leaking ids)."""
-    row = await db.get(MatchingShortlisting, entry_id)
+    row = await review_repository.get_entry(db, entry_id)
     if row is None or row.shared_to != user.id:
         raise NotFoundError("Shortlist entry not found.")
     return row
@@ -81,15 +73,13 @@ async def _hm_row(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> M
 
 async def to_entry(db: AsyncSession, row: MatchingShortlisting) -> ShortlistEntry:
     # updated_at is set by the database on update; reload it before reading.
-    await db.refresh(row)
-    candidate = await db.get(Candidate, row.candidate_id)
-    skills = (await db.execute(
-        select(ResumeExtraction.skills).where(ResumeExtraction.resume_id == row.resume_id).limit(1)
-    )).scalar_one_or_none()
+    await review_repository.refresh(db, row)
+    candidate = await review_repository.get_candidate(db, row.candidate_id)
+    skills = await review_repository.get_resume_skills(db, row.resume_id)
     weights = await matching_service.load_weights(db, row.job_id)
     entry = _entry(row, candidate, skills, weights, row.rank,
                    float(row.total_score) if row.total_score is not None else None)
-    job = await db.get(Job, row.job_id)
+    job = await review_repository.get_job(db, row.job_id)
     entry.job_title = job.title if job else None
     return entry
 
@@ -104,7 +94,7 @@ async def _log(user: CurrentUser, action: Action, row_or_job_id, **detail) -> No
 
 
 async def _sync_candidate_status(db: AsyncSession, row: MatchingShortlisting) -> None:
-    candidate = await db.get(Candidate, row.candidate_id)
+    candidate = await review_repository.get_candidate(db, row.candidate_id)
     if candidate is not None:
         candidate.status = row.status
 
@@ -139,19 +129,14 @@ async def set_shortlisted(db: AsyncSession, user: CurrentUser, entry_id: uuid.UU
 async def share(db: AsyncSession, user: CurrentUser, access_token: str, job_id: uuid.UUID,
                 hiring_manager_id: uuid.UUID, entry_ids: list[uuid.UUID] | None,
                 note: str | None) -> ShareResult:
-    job = await db.get(Job, job_id)
+    job = await review_repository.get_job(db, job_id)
     if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     manager = await find_user(access_token, hiring_manager_id, "hiring_manager")
     if manager is None:
         raise UnprocessableError("That user is not an active hiring manager.")
 
-    query = select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id)
-    if entry_ids:
-        query = query.where(MatchingShortlisting.id.in_(entry_ids))
-    else:
-        query = query.where(MatchingShortlisting.status == CandidateStatus.SHORTLISTED)
-    rows = list((await db.execute(query)).scalars())
+    rows = await review_repository.find_entries_to_share(db, job_id, entry_ids)
     if entry_ids and len(rows) != len(set(entry_ids)):
         raise NotFoundError("Some entries don't belong to this job.")
     if not rows:
@@ -176,15 +161,7 @@ async def share(db: AsyncSession, user: CurrentUser, access_token: str, job_id: 
 
 async def list_shared(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID | None,
                       status_filter: CandidateStatus | None) -> list[ShortlistEntry]:
-    query = (select(MatchingShortlisting)
-             .join(Job, Job.id == MatchingShortlisting.job_id)
-             .where(MatchingShortlisting.shared_to == user.id, Job.deleted_at.is_(None))
-             .order_by(MatchingShortlisting.job_id, MatchingShortlisting.total_score.desc()))
-    if job_id:
-        query = query.where(MatchingShortlisting.job_id == job_id)
-    if status_filter:
-        query = query.where(MatchingShortlisting.status == status_filter)
-    rows = list((await db.execute(query)).scalars())
+    rows = await review_repository.find_shared_with(db, user.id, job_id, status_filter)
     scheduled = await _scheduled_at(db, [r.id for r in rows])
     entries = []
     for row in rows:
@@ -196,7 +173,7 @@ async def list_shared(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID | N
 
 async def shared_resume(db: AsyncSession, user: CurrentUser, entry_id: uuid.UUID) -> tuple[Document, bytes]:
     row = await _hm_row(db, user, entry_id)
-    document = await db.get(Document, row.resume_id)
+    document = await review_repository.get_document(db, row.resume_id)
     if document is None:
         raise NotFoundError("Resume file not found.")
     return document, storage.read(document.file_path)
@@ -220,14 +197,7 @@ async def schedule_interviews(db: AsyncSession, user: CurrentUser, job_id: uuid.
     """One click: schedule interviews for every approved candidate shared with this hiring
     manager (optionally one job) that isn't scheduled yet. The status stays "approved";
     the scheduling is recorded in the history."""
-    query = select(MatchingShortlisting).join(Job, Job.id == MatchingShortlisting.job_id).where(
-        MatchingShortlisting.shared_to == user.id,
-        MatchingShortlisting.status == CandidateStatus.APPROVED,
-        Job.deleted_at.is_(None),
-    )
-    if job_id:
-        query = query.where(MatchingShortlisting.job_id == job_id)
-    rows = list((await db.execute(query)).scalars())
+    rows = await review_repository.find_approved_shared_with(db, user.id, job_id)
     already = await _scheduled_at(db, [r.id for r in rows])
     todo = [r for r in rows if str(r.id) not in already]
     if not todo:
@@ -253,10 +223,9 @@ async def schedule_interview(db: AsyncSession, user: CurrentUser, entry_id: uuid
 # ---------- history ----------
 
 async def history(db: AsyncSession, user: CurrentUser, job_id: uuid.UUID) -> list[ReviewEvent]:
-    rows = (await db.execute(
-        select(AuditLog).where(AuditLog.job_id == job_id, AuditLog.actions.in_(REVIEW_ACTIONS))
-        .order_by(AuditLog.created_at, AuditLog.id)
-    )).scalars().all()
+    if user.role == Role.HIRING_MANAGER and not await review_repository.has_shared_entry(db, job_id, user.id):
+        raise NotFoundError("Nothing was shared with you for this job.")
+    rows = await review_repository.find_review_events(db, job_id, REVIEW_ACTIONS)
     events = []
     for r in rows:
         try:

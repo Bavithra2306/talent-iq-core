@@ -3,11 +3,11 @@
 import logging
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.data.models.postgres.job import Job
 from src.data.models.postgres.job_embedding import JobEmbedding
+from src.data.repositories import job_embedding_repository
 from src.handlers.http_clients import embedding_client
 from src.handlers.http_clients.embedding_client import EmbeddingError
 
@@ -29,12 +29,10 @@ async def refresh_job_embedding(db: AsyncSession, job: Job, user_id: uuid.UUID |
         logger.warning("job %s embedding skipped: %s", job.id, exc)
         return False
 
-    row = (await db.execute(
-        select(JobEmbedding).where(JobEmbedding.job_id == job.id).limit(1)
-    )).scalar_one_or_none()
+    row = await job_embedding_repository.find_by_job(db, job.id)
     if row is None:
         row = JobEmbedding(job_id=job.id, created_by=user_id)
-        db.add(row)
+        job_embedding_repository.add(db, row)
     else:
         row.updated_by = user_id
     for column in texts:
@@ -42,3 +40,8 @@ async def refresh_job_embedding(db: AsyncSession, job: Job, user_id: uuid.UUID |
     row.model_version = 1  # 1 = gemini-embedding-001 at 768 dimensions
     await db.commit()
     return True
+
+
+async def find_embedding(db: AsyncSession, job_id: uuid.UUID) -> JobEmbedding | None:
+    """The stored vectors of a job, if any."""
+    return await job_embedding_repository.find_by_job(db, job_id)

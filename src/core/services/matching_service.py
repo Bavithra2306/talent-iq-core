@@ -21,19 +21,16 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from sqlalchemy import Float, String, and_, cast, null, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from src.api.rest.dependencies import CurrentUser
-from src.api.rest.schemas.shortlist_schema import ShortlistFilters, ShortlistRunRequest
+from src.api.rest.schemas.shortlist_schema import ShortlistRunRequest
 from src.config.settings import settings
 from src.constants.categories import normalize_category
 from src.constants.enums import (
     Action,
     ActionCategory,
     CandidateStatus,
-    EmbeddingKind,
     PipelineStage,
 )
 from src.control.agents.prompts import match_explanation, match_scoring
@@ -41,17 +38,14 @@ from src.core.exceptions import BadRequestError, ConflictError, NotFoundError
 from src.core.services import scoring_rules
 from src.core.services.audit_service import log_event
 from src.core.services.friendly_errors import friendly_error
-from src.core.services.job_embedding_service import refresh_job_embedding
-from src.core.services.query_helpers import skill_clause
+from src.core.services.job_embedding_service import find_embedding, refresh_job_embedding
 from src.core.services.scoring_rules import Weights
 from src.data.clients.postgres import AsyncSessionLocal
 from src.data.models.postgres.candidate import Candidate
 from src.data.models.postgres.job import Job
-from src.data.models.postgres.job_embedding import JobEmbedding
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
-from src.data.models.postgres.resume_embedding import ResumeEmbedding
 from src.data.models.postgres.resume_extraction import ResumeExtraction
-from src.data.models.postgres.scoring_config import ScoringConfig
+from src.data.repositories import jd_repository, matching_repository
 from src.handlers.http_clients.llm_client import LLMError, llm
 
 logger = logging.getLogger("talentiq.matching")
@@ -109,9 +103,7 @@ def job_signature(job: Job) -> str:
 
 
 async def load_weights(db: AsyncSession, job_id: uuid.UUID) -> Weights:
-    config = (await db.execute(
-        select(ScoringConfig).where(ScoringConfig.job_id == job_id)
-    )).scalar_one_or_none()
+    config = await jd_repository.find_scoring_config(db, job_id)
     if config is None:
         return Weights()
     return Weights(config.skill_pct, config.role_pct, config.exp_pct, config.edu_pct)
@@ -152,30 +144,17 @@ def _experience(job: Job, p: Pending) -> tuple[float, str]:
                                           p.extraction.roles_and_years, list(job.skills or []))
 
 
-def _filter_clauses(filters: ShortlistFilters) -> list:
-    clauses = []
-    if filters.category:
-        clauses.append(Candidate.category == normalize_category(filters.category))
-    if filters.location:
-        clauses.append(Candidate.location.ilike(f"%{filters.location.strip()}%"))
-    if filters.min_experience is not None:
-        clauses.append(Candidate.total_years_experience >= filters.min_experience)
-    if filters.max_experience is not None:
-        clauses.append(Candidate.total_years_experience <= filters.max_experience)
-    if filters.education:
-        clauses.append(cast(ResumeExtraction.education, String).ilike(f"%{filters.education.strip()}%"))
-    for skill in filters.must_have_skills:
-        if skill.strip():
-            clauses.append(skill_clause(ResumeExtraction.skills, skill))
-    return clauses
-
-
 # ---------- starting a run ----------
+
+async def get_job(db: AsyncSession, job_id: uuid.UUID) -> Job | None:
+    """The job a run is for (a deleted job is still returned; callers decide)."""
+    return await matching_repository.get_job(db, job_id)
+
 
 async def start_run(
     db: AsyncSession, user: CurrentUser, job_id: uuid.UUID, request: ShortlistRunRequest
 ) -> str:
-    job = await db.get(Job, job_id)
+    job = await matching_repository.get_job(db, job_id)
     if job is None or job.deleted_at is not None:
         raise NotFoundError("Job not found.")
     if not job.skills:
@@ -234,10 +213,10 @@ async def _run(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, request: Shor
 # ---------- step 1: candidate pool ----------
 
 async def job_vectors(db: AsyncSession, job: Job, user_id: uuid.UUID) -> tuple[list[float] | None, list[float] | None]:
-    row = (await db.execute(select(JobEmbedding).where(JobEmbedding.job_id == job.id).limit(1))).scalar_one_or_none()
+    row = await find_embedding(db, job.id)
     if row is None or (row.skill_vector is None and row.role_vector is None):
         if await refresh_job_embedding(db, job, user_id):
-            row = (await db.execute(select(JobEmbedding).where(JobEmbedding.job_id == job.id).limit(1))).scalar_one_or_none()
+            row = await find_embedding(db, job.id)
     if row is None:
         return None, None
     skill = list(row.skill_vector) if row.skill_vector is not None else None
@@ -267,22 +246,7 @@ async def select_candidates(
     match_fill_to are taken. Returns (candidates to score, best first; number considered;
     number left out; number without a search index yet; lowest similarity taken).
     """
-    skill_vec, role_vec = job_vectors
-    skill_emb, role_emb = aliased(ResumeEmbedding), aliased(ResumeEmbedding)
-    sim_skill = (1 - skill_emb.vector.cosine_distance(skill_vec)) if skill_vec else cast(null(), Float)
-    sim_role = (1 - role_emb.vector.cosine_distance(role_vec)) if role_vec else cast(null(), Float)
-    query = (
-        select(Candidate, ResumeExtraction, sim_skill.label("sim_skill"), sim_role.label("sim_role"))
-        .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-        .outerjoin(skill_emb, and_(skill_emb.resume_id == Candidate.current_resume_id,
-                                   skill_emb.kind == EmbeddingKind.SKILL))
-        .outerjoin(role_emb, and_(role_emb.resume_id == Candidate.current_resume_id,
-                                  role_emb.kind == EmbeddingKind.ROLE))
-    )
-    category = normalize_category(job.category)
-    if category:
-        query = query.where(Candidate.category == category)
-    rows = (await db.execute(query)).all()
+    rows = await matching_repository.find_pool(db, job_vectors, normalize_category(job.category))
 
     indexed, not_indexed = [], 0
     for candidate, extraction, s_skill, s_role in rows:
@@ -305,15 +269,7 @@ async def select_candidates(
     # Candidates added by hand from another job are always scored, even outside the category or the threshold.
     if extra_ids:
         taken = {p.candidate.id for p in chosen}
-        extra_rows = (await db.execute(
-            select(Candidate, ResumeExtraction, sim_skill.label("sim_skill"), sim_role.label("sim_role"))
-            .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-            .outerjoin(skill_emb, and_(skill_emb.resume_id == Candidate.current_resume_id,
-                                       skill_emb.kind == EmbeddingKind.SKILL))
-            .outerjoin(role_emb, and_(role_emb.resume_id == Candidate.current_resume_id,
-                                      role_emb.kind == EmbeddingKind.ROLE))
-            .where(Candidate.id.in_(extra_ids))
-        )).all()
+        extra_rows = await matching_repository.find_pool_by_candidates(db, job_vectors, extra_ids)
         for candidate, extraction, s_skill, s_role in extra_rows:
             if candidate.id not in taken:
                 p = Pending(candidate, extraction, s_skill, s_role)
@@ -326,12 +282,7 @@ async def select_candidates(
 # ---------- step 2: reuse stored scores ----------
 
 async def apply_cache(db: AsyncSession, job: Job, pool: list[Pending], signature: str) -> None:
-    rows = (await db.execute(
-        select(MatchingShortlisting).where(
-            MatchingShortlisting.job_id == job.id,
-            MatchingShortlisting.candidate_id.in_([p.candidate.id for p in pool]),
-        )
-    )).scalars().all()
+    rows = await matching_repository.find_rows_by_candidates(db, job.id, [p.candidate.id for p in pool])
     by_candidate = {r.candidate_id: r for r in rows}
     for p in pool:
         row = by_candidate.get(p.candidate.id)
@@ -495,11 +446,7 @@ async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[P
                    weights: Weights, signature: str) -> None:
     """Save scores and rank this run's candidates. Nobody is shortlisted here: the recruiter
     picks the top K (with filters) afterwards. Statuses already set are left alone."""
-    existing = {
-        r.candidate_id: r for r in (await db.execute(
-            select(MatchingShortlisting).where(MatchingShortlisting.job_id == job.id)
-        )).scalars()
-    }
+    existing = {r.candidate_id: r for r in await matching_repository.find_rows_by_job(db, job.id)}
     entries = []
     for p in scored:
         explanation = _explanation_dict(job, p, signature)
@@ -514,7 +461,7 @@ async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[P
         if row is None:
             row = MatchingShortlisting(job_id=job.id, candidate_id=p.candidate.id,
                                        status=CandidateStatus.SOURCED, created_by=user_id)
-            db.add(row)
+            matching_repository.add_row(db, row)
             existing[p.candidate.id] = row
         else:
             row.updated_by = user_id
@@ -533,7 +480,7 @@ async def persist(db: AsyncSession, user_id: uuid.UUID, job: Job, scored: list[P
     for row in existing.values():
         if id(row) not in in_run:
             row.rank = None
-    await db.flush()
+    await matching_repository.flush(db)
 
 
 def _set_shortlist_status(row: MatchingShortlisting, shortlisted: bool) -> None:
@@ -544,18 +491,12 @@ def _set_shortlist_status(row: MatchingShortlisting, shortlisted: bool) -> None:
 
 
 async def unrank_all(db: AsyncSession, job_id: uuid.UUID) -> None:
-    rows = (await db.execute(select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id))).scalars()
-    for row in rows:
+    for row in await matching_repository.find_rows_by_job(db, job_id):
         row.rank = None
 
 
 async def top_rows(db: AsyncSession, job_id: uuid.UUID, top_k: int) -> list[MatchingShortlisting]:
-    return list((await db.execute(
-        select(MatchingShortlisting)
-        .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.rank.is_not(None),
-               MatchingShortlisting.rank <= top_k)
-        .order_by(MatchingShortlisting.rank)
-    )).scalars())
+    return await matching_repository.find_top_ranked(db, job_id, top_k)
 
 
 # ---------- step 4: explanations ----------
@@ -596,9 +537,7 @@ async def generate_explanations(
     needed = [r for r in rows if r.explanation and not r.explanation.get("summary")]
     if not needed:
         return
-    candidates = {c.id: c for c in (await db.execute(
-        select(Candidate).where(Candidate.id.in_([r.candidate_id for r in needed]))
-    )).scalars()}
+    candidates = await matching_repository.find_candidates(db, [r.candidate_id for r in needed])
     job_info = {"title": job.title, "experience_years": job.experience_years, "education": job.education}
     size = settings.explain_batch_size
     groups = [needed[i:i + size] for i in range(0, len(needed), size)]
