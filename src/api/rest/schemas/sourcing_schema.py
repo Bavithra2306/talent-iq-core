@@ -32,13 +32,6 @@ class KaggleSource(BaseModel):
     max_results: int = Field(default=20, ge=1, le=200)
 
 
-class GoogleSource(BaseModel):
-    type: Literal["google"] = "google"
-    query: str | None = Field(default=None, min_length=2, max_length=150,
-                              description='e.g. "java developer chennai"; ignored when the run has a keyword')
-    max_results: int = Field(default=10, ge=1, le=30)
-
-
 class UrlSource(BaseModel):
     type: Literal["url"] = "url"
     urls: list[HttpUrl] = Field(min_length=1, max_length=200)
@@ -46,7 +39,7 @@ class UrlSource(BaseModel):
 
 
 SourceSpec = Annotated[
-    GitHubSource | StackExchangeSource | HuggingFaceSource | KaggleSource | GoogleSource | UrlSource,
+    GitHubSource | StackExchangeSource | HuggingFaceSource | KaggleSource | UrlSource,
     Field(discriminator="type"),
 ]
 

@@ -48,7 +48,6 @@ class Resolved:
     category: str | None = None
     github_query: str | None = None
     stack_tag: str | None = None
-    text: str = ""  # the keyword itself, used as the Google search
     notes: dict[str, str] = field(default_factory=dict)  # source type -> note for the user
 
 
@@ -60,7 +59,7 @@ def resolve(keyword: str) -> Resolved:
     keyword = " ".join(keyword.split())
     words = [w.strip(".") if w not in {".net", "node.js", "vue.js"} else w for w in _words(keyword)]
     category = guess_category(keyword)
-    out = Resolved(category=category, text=keyword)
+    out = Resolved(category=category)
 
     language = next((_GITHUB_LANGUAGES[w] for w in words if w in _GITHUB_LANGUAGES), None)
     tag = next((_STACK_TAGS[w] for w in words if w in _STACK_TAGS), None)

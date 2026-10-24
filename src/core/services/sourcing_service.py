@@ -25,7 +25,6 @@ from src.data.repositories import sourcing_repository
 from src.handlers.http_clients.sourcing.keywords import Resolved, resolve
 from src.handlers.http_clients.sourcing.sources import (
     github,
-    google,
     huggingface,
     kaggle,
     stackexchange,
@@ -77,17 +76,6 @@ def catalog() -> list[SourceInfo]:
             limits="About 100 searches a day without a key.",
             terms="Profiles are shared under CC BY-SA, so we keep a link back to each one.",
             example={"type": "stackexchange", "tag": "python", "max_results": 10},
-        ),
-        SourceInfo(
-            type="google", name="Google search (public resumes)",
-            description="Finds public resume files (PDF or Word) and portfolio pages with Google's official search, "
-                        "then reads them like uploads. LinkedIn, Naukri and Indeed are left out.",
-            parameters={"query": 'e.g. "java developer chennai"', "max_results": "1-30"},
-            configured=google.configured(),
-            needs=None if google.configured() else "A free Google key (GOOGLE_CSE_API_KEY) and search engine id (GOOGLE_CSE_CX).",
-            limits="About 100 searches a day for free; one run uses up to 3.",
-            terms="Only public pages and files; each site is visited slowly and its robots.txt rules are respected.",
-            example={"type": "google", "query": "java developer chennai", "max_results": 10},
         ),
         SourceInfo(
             type="url", name="Your own links",
@@ -155,11 +143,6 @@ async def _collect(spec, keyword: Resolved | None = None) -> SourceResult:
                                            spec.max_results)
     elif spec.type == "kaggle":
         result = await kaggle.collect(keyword.category if keyword else spec.category, spec.max_results)
-    elif spec.type == "google":
-        text = keyword.text if keyword else spec.query
-        if not text:
-            return SourceResult(errors=[note or "Enter a search or a keyword."])
-        result = await google.collect(text, spec.max_results)
     else:
         return await url.collect([str(u) for u in spec.urls], spec.follow_links)
     result.note = " ".join(filter(None, [note, result.note])) or None
