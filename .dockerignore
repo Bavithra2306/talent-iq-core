@@ -1,0 +1,16 @@
+# Not needed to build the image (and some must never be copied into it)
+.git
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.env*
+secrets
+storage
+evaluation
+tests
+docs
+requirements
+Makefile
+pyrightconfig.json

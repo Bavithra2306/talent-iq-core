@@ -14,19 +14,23 @@ RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.l
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.13.5 /uv /uvx /bin/
 
-COPY pyproject.toml uv.lock ./
+# Run as a normal user, not as root.
+RUN useradd --create-home --uid 1000 app && chown app:app /app /opt
+USER app
+
+COPY --chown=app:app pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
 
 # Bake Docling's models into the image so the first parse doesn't download them.
 # A local ./docling-models folder (copied from an earlier image) is reused when present,
 # so builds don't depend on the model sites being reachable; otherwise they are downloaded.
-COPY pyproject.toml docling-model[s] /tmp/models/
+COPY --chown=app:app pyproject.toml docling-model[s] /tmp/models/
 RUN if [ -d /tmp/models/RapidOcr ]; then mv /tmp/models /opt/docling-models;     else rm -rf /tmp/models && uv run --no-sync docling-tools models download -o /opt/docling-models; fi
 
-COPY src/ ./src/
-COPY alembic.ini ./
+COPY --chown=app:app src/ ./src/
+COPY --chown=app:app alembic.ini ./
 
 EXPOSE 8001
 

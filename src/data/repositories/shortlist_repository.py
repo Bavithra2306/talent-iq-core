@@ -26,7 +26,7 @@ async def find_scored_rows(
         .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
         .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == MatchingShortlisting.resume_id)
         .join(Job, Job.id == MatchingShortlisting.job_id)
-        .where(MatchingShortlisting.total_score.is_not(None), Job.deleted_at.is_(None))
+        .where(MatchingShortlisting.total_score.is_not(None), Job.deleted_at.is_(None), Candidate.deleted_at.is_(None))
     )
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)
@@ -67,7 +67,7 @@ async def find_ranked_rows(db: AsyncSession, job_id: uuid.UUID) -> list[tuple[Ma
     return [tuple(r) for r in (await db.execute(
         select(MatchingShortlisting, Candidate)
         .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-        .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.rank.is_not(None))
+        .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.rank.is_not(None), Candidate.deleted_at.is_(None))
     )).all()]
 
 

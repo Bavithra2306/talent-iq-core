@@ -63,6 +63,7 @@ class Action(str, enum.Enum):
     PARSING_COMPLETED = "parsing_completed"
     PARSING_FAILED = "parsing_failed"
     EXTRACTION_STARTED = "extraction_started"
+    RESUME_DELETED = "resume_deleted"
     EXTRACTION_COMPLETED = "extraction_completed"
     EXTRACTION_FAILED = "extraction_failed"
     # scoring

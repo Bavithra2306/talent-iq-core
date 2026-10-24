@@ -1,0 +1,112 @@
+# TalentIQ: all four services in one file (database, auth, core, frontend).
+# The repositories sit side by side; run it from this folder or from their parent folder:
+#   docker compose up -d --build                                  (in talent-iq-core)
+#   docker compose -f talent-iq-core/docker-compose.yml up -d --build   (in the parent folder)
+# Secrets live in each service's .env files, which are not committed.
+name: talentiq
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    container_name: talent-iq-postgres
+    env_file:
+      - ../talent-iq-auth/.env.postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - talent_iq_pgdata:/var/lib/postgresql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  auth:
+    build:
+      context: ../talent-iq-auth
+      dockerfile: Dockerfile
+    image: talent-iq-auth:dev
+    container_name: talent-iq-auth-dev
+    env_file:
+      - ../talent-iq-auth/.env.docker
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - uv
+        - run
+        - --no-sync
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/docs', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: talent-iq-core:dev
+    container_name: talent-iq-core-dev
+    env_file:
+      - ./.env.docker
+    ports:
+      - "8001:8001"
+    volumes:
+      # Resume and job-description files, visible on this PC in ./storage
+      - ../storage:/app/storage
+      # Google Cloud service-account key (only needed for STORAGE_BACKEND=gcs)
+      - ./secrets:/app/secrets:ro
+      # Answer keys and result reports from src/evaluation/evaluate.py
+      - ../evaluation:/app/evaluation
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - uv
+        - run
+        - --no-sync
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/api/v1/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ../talent-iq-frontend
+      dockerfile: Dockerfile
+    image: talent-iq-frontend:dev
+    container_name: talent-iq-frontend
+    ports:
+      - "3000:8080"
+    restart: unless-stopped
+    depends_on:
+      auth:
+        condition: service_healthy
+      core:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  # Existing volume that holds the data; keep it so nothing is lost.
+  talent_iq_pgdata:
+    external: true

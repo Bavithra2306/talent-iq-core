@@ -54,7 +54,8 @@ async def get_resume_skills(db: AsyncSession, resume_id: uuid.UUID) -> list | No
 async def find_entries_to_share(db: AsyncSession, job_id: uuid.UUID,
                                 entry_ids: list[uuid.UUID] | None) -> list[MatchingShortlisting]:
     """The chosen entries of a job, or all its shortlisted entries when none were chosen."""
-    query = select(MatchingShortlisting).where(MatchingShortlisting.job_id == job_id)
+    query = (select(MatchingShortlisting).join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
+             .where(MatchingShortlisting.job_id == job_id, Candidate.deleted_at.is_(None)))
     if entry_ids:
         query = query.where(MatchingShortlisting.id.in_(entry_ids))
     else:
@@ -67,8 +68,9 @@ async def find_shared_with(db: AsyncSession, user_id: uuid.UUID, job_id: uuid.UU
     """Entries shared with a hiring manager (jobs not deleted), grouped by job, best score first."""
     query = (select(MatchingShortlisting)
              .join(Job, Job.id == MatchingShortlisting.job_id)
-             .where(MatchingShortlisting.shared_to == user_id, Job.deleted_at.is_(None))
-             .order_by(MatchingShortlisting.job_id, MatchingShortlisting.total_score.desc()))
+             .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
+             .where(MatchingShortlisting.shared_to == user_id, Job.deleted_at.is_(None), Candidate.deleted_at.is_(None))
+             .order_by(MatchingShortlisting.job_id, MatchingShortlisting.total_score.desc(), MatchingShortlisting.id))
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)
     if status_filter:
@@ -78,11 +80,11 @@ async def find_shared_with(db: AsyncSession, user_id: uuid.UUID, job_id: uuid.UU
 
 async def find_approved_shared_with(db: AsyncSession, user_id: uuid.UUID,
                                     job_id: uuid.UUID | None) -> list[MatchingShortlisting]:
-    query = select(MatchingShortlisting).join(Job, Job.id == MatchingShortlisting.job_id).where(
-        MatchingShortlisting.shared_to == user_id,
-        MatchingShortlisting.status == CandidateStatus.APPROVED,
-        Job.deleted_at.is_(None),
-    )
+    query = (select(MatchingShortlisting).join(Job, Job.id == MatchingShortlisting.job_id)
+             .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
+             .where(MatchingShortlisting.shared_to == user_id,
+                    MatchingShortlisting.status == CandidateStatus.APPROVED,
+                    Job.deleted_at.is_(None), Candidate.deleted_at.is_(None)))
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)
     return list((await db.execute(query)).scalars())

@@ -127,6 +127,16 @@ async def candidate_categories(
     return await candidate_service.category_counts(db)
 
 
+@ResumeRouter.delete("/candidates/{candidate_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a resume")
+async def delete_candidate(
+    candidate_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(recruiter_only),
+):
+    """Soft delete: the resume disappears from every list and result; nothing is erased."""
+    await candidate_service.delete_candidate(db, user, candidate_id)
+
+
 @ResumeRouter.get("/candidates/{candidate_id}", response_model=CandidateDetail)
 async def get_candidate(
     candidate_id: uuid.UUID,

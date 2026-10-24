@@ -122,6 +122,8 @@ async def list_entries(
         "date_added": lambda it: it[0].created_at,
         "name": lambda it: (it[1].name or "").lower(),
     }
+    # Equal scores keep a fixed order (name, then id) instead of whatever order the database returns.
+    items.sort(key=lambda it: ((it[1].name or "").lower(), str(it[0].id)))
     items.sort(key=keys[sort], reverse=descending)
     page = items[offset:offset + limit]
     entries = [_entry(row, cand, skills, weights, ranks.get(row.id, row.rank), total)

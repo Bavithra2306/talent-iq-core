@@ -1,7 +1,8 @@
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import ForeignKey, Index, Numeric, String, Uuid
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.constants.enums import CandidateStatus
@@ -27,6 +28,10 @@ class Candidate(IdMixin, AuditMixin, Base):
     total_years_experience: Mapped[Decimal | None] = mapped_column(
         Numeric(4, 1), nullable=True
     )
+
+    # soft delete: a deleted resume is hidden everywhere but its row, file and history stay
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
 
     __table_args__ = (
         Index("ix_candidates_email", "email"),

@@ -26,6 +26,7 @@ async def find_batch_events(db: AsyncSession, batch_id: str) -> list[AuditLog]:
 
 def _apply_filters(query, *, category, search, location, skill, min_experience,
                    max_experience, status_filter, source_site):
+    query = query.where(Candidate.deleted_at.is_(None))
     if category:
         query = query.where(Candidate.category == category)
     if search:
@@ -88,7 +89,7 @@ async def find_batch_resumes(db: AsyncSession, batch_id: str):
         select(Candidate, ResumeExtraction, Document)
         .join(Document, Document.id == Candidate.current_resume_id)
         .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-        .where(Document.batch_id == batch_id)
+        .where(Document.batch_id == batch_id, Candidate.deleted_at.is_(None))
         .order_by(Candidate.name, Candidate.id)
     )
     return [tuple(r) for r in rows.all()]
@@ -112,19 +113,25 @@ async def find_detail_row(db: AsyncSession, candidate_id: uuid.UUID):
         select(Candidate, ResumeExtraction, Document)
         .join(Document, Document.id == Candidate.current_resume_id)
         .outerjoin(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-        .where(Candidate.id == candidate_id)
+        .where(Candidate.id == candidate_id, Candidate.deleted_at.is_(None))
     )).first()
 
 
 async def count_by_category(db: AsyncSession) -> list[tuple[str | None, int]]:
     rows = await db.execute(
-        select(Candidate.category, func.count()).group_by(Candidate.category).order_by(func.count().desc())
+        select(Candidate.category, func.count()).where(Candidate.deleted_at.is_(None))
+        .group_by(Candidate.category).order_by(func.count().desc())
     )
     return [(c, n) for c, n in rows.all()]
 
 
 async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> Candidate | None:
     return await db.get(Candidate, candidate_id)
+
+
+def mark_deleted(candidate: Candidate, user_id: uuid.UUID, at) -> None:
+    candidate.deleted_at = at
+    candidate.deleted_by = user_id
 
 
 async def get_document(db: AsyncSession, document_id: uuid.UUID) -> Document | None:

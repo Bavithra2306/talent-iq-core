@@ -18,7 +18,8 @@ async def find_scored_rows(
     person, to some statuses, or to this run's ranked candidates."""
     query = (select(MatchingShortlisting, Candidate)
              .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-             .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.total_score.is_not(None)))
+             .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.total_score.is_not(None),
+                    Candidate.deleted_at.is_(None)))
     if shared_to is not None:
         query = query.where(MatchingShortlisting.shared_to == shared_to)
     elif statuses is not None:

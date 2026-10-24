@@ -75,6 +75,7 @@ class BatchItem:
     document_id: uuid.UUID
     filename: str
     storage_key: str
+    sourced: bool = False  # found by sourcing: it must show a name and a way to contact the person
 
 
 @dataclass
@@ -187,7 +188,7 @@ async def accept_uploads(
             elif document.id in extracted_ids:
                 rejected.append({"filename": name, "reason": "Already uploaded"})
             else:  # earlier attempt failed part-way: process it again
-                items.append(BatchItem(document.id, name, document.file_path))
+                items.append(BatchItem(document.id, name, document.file_path, sourced=document.source_type == "sourced"))
             continue
 
         stored_filename, key = storage.save(RESUME_FOLDER, name, upload.data)
@@ -205,7 +206,7 @@ async def accept_uploads(
             batch_id=batch_id,
         )
         await resume_repository.add_document(db, document)
-        items.append(BatchItem(document.id, name, key))
+        items.append(BatchItem(document.id, name, key, sourced=source_type == "sourced"))
     await db.commit()
 
     if not items:
@@ -299,7 +300,7 @@ async def retry_failed(db: AsyncSession, user: CurrentUser) -> UploadResult:
     documents = [d for d in await resume_repository.find_unread_resume_documents(db, DOC_TYPE_RESUME) if d.id not in running]
     if not documents:
         return UploadResult(batch_id=None, accepted=[], rejected=[])
-    items = [BatchItem(d.id, d.original_filename or d.stored_filename, d.file_path) for d in documents]
+    items = [BatchItem(d.id, d.original_filename or d.stored_filename, d.file_path, sourced=d.source_type == "sourced") for d in documents]
     batch_id = str(uuid.uuid4())
     await log_event(
         user_id=user.id, category=ActionCategory.EXTRACTION, stage=PipelineStage.CREATED,
@@ -314,6 +315,16 @@ async def retry_failed(db: AsyncSession, user: CurrentUser) -> UploadResult:
         accepted=[{"document_id": str(i.document_id), "filename": i.filename} for i in items],
         rejected=[],
     )
+
+
+def missing_required(result: prompt.ExtractedResume) -> str | None:
+    """What a sourced resume lacks, or None when it has what we need: a name and a way to contact the person
+    (an e-mail address or a phone number). Public datasets and profiles often hide these on purpose."""
+    if not (result.name or "").strip():
+        return "no name"
+    if not _clean_email(result.email) and len(_digits(result.phone)) < 7:
+        return "no email or phone number"
+    return None
 
 
 def has_resume_details(result: prompt.ExtractedResume) -> bool:
@@ -403,6 +414,10 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
                 await fail_item(batch_id, user_id, state, item,
                                 "No resume details found (name, skills or work history). "
                                 "Waiting for your review.", needs_review=True)
+            elif item.sourced and (missing := missing_required(result)):
+                await fail_item(batch_id, user_id, state, item,
+                                f"Cannot process this resume: {missing} was found. Waiting for your review.",
+                                needs_review=True)
             else:
                 valid.append((item, parsed, result, model))
         if not valid:
@@ -477,6 +492,7 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
                 setattr(candidate, key, value)
         candidate.current_resume_id = document.id
         candidate.updated_by = user_id
+        candidate.deleted_at, candidate.deleted_by = None, None  # a new resume brings a deleted person back
         await _reopen_rejected(db, candidate.id, user_id)
     await resume_repository.flush(db)
 

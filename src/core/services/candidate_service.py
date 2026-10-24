@@ -7,12 +7,14 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.rest.dependencies import CurrentUser
 from src.api.rest.schemas.candidate_schema import CandidateDetail, CandidateListItem, JobStatusItem
 from src.api.rest.schemas.ingestion_schema import BatchEvent, BatchStatus, RejectedFile
 from src.constants.categories import normalize_category
-from src.constants.enums import PipelineStage
+from src.constants.enums import Action, ActionCategory, PipelineStage
 from src.core.exceptions import NotFoundError
 from src.core.services import resume_service
+from src.core.services.audit_service import log_event, utcnow
 from src.data.clients.storage import storage
 from src.data.models.postgres.audit_log import AuditLog
 from src.data.models.postgres.document import Document
@@ -164,13 +166,26 @@ async def list_batch_candidates(db: AsyncSession, batch_id: str) -> list[Candida
     return details
 
 
+async def delete_candidate(db: AsyncSession, user: CurrentUser, candidate_id: uuid.UUID) -> None:
+    """Soft delete: hide the resume everywhere (lists, matching, shortlists, review, exports).
+    The row, the file and the history stay. Uploading the same person again brings them back."""
+    candidate = await candidate_repository.get_candidate(db, candidate_id)
+    if candidate is None or candidate.deleted_at is not None:
+        raise NotFoundError("Candidate not found.")
+    candidate_repository.mark_deleted(candidate, user.id, utcnow())
+    await db.commit()
+    await log_event(user_id=user.id, category=ActionCategory.EXTRACTION, action=Action.RESUME_DELETED,
+                    input_data={"candidate_id": str(candidate.id), "name": candidate.name},
+                    output_data="Deleted by the recruiter.")
+
+
 async def category_counts(db: AsyncSession) -> list[dict]:
     return [{"category": c, "count": n} for c, n in await candidate_repository.count_by_category(db)]
 
 
 async def get_resume_file(db: AsyncSession, candidate_id: uuid.UUID) -> tuple[Document, bytes]:
     candidate = await candidate_repository.get_candidate(db, candidate_id)
-    if candidate is None:
+    if candidate is None or candidate.deleted_at is not None:
         raise NotFoundError("Candidate not found.")
     document = await candidate_repository.get_document(db, candidate.current_resume_id)
     if document is None:
