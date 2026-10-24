@@ -25,7 +25,7 @@ async def find_batch_events(db: AsyncSession, batch_id: str) -> list[AuditLog]:
 
 
 def _apply_filters(query, *, category, search, location, skill, min_experience,
-                   max_experience, status_filter, source_site, readiness):
+                   max_experience, status_filter, source_site, readiness, origin):
     query = query.where(Candidate.deleted_at.is_(None), Candidate.readiness == readiness)
     if category:
         query = query.where(Candidate.category == category)
@@ -54,12 +54,16 @@ def _apply_filters(query, *, category, search, location, skill, min_experience,
         ).exists())
     if source_site:
         query = query.where(Document.source_site == source_site)
+    if origin == "sourced":
+        query = query.where(Document.source_type == "sourced")
+    elif origin == "uploaded":
+        query = query.where(Document.source_type.is_distinct_from("sourced"))
     return query
 
 
 async def search(
     db: AsyncSession, *, category, search, location, skill, min_experience, max_experience,
-    status_filter, source_site, readiness, sort_column, descending: bool, limit: int, offset: int,
+    status_filter, source_site, readiness, origin, sort_column, descending: bool, limit: int, offset: int,
 ) -> tuple[list[tuple[Candidate, list | None, str | None]], int]:
     """One page of (candidate, skills, source site) rows, and how many candidates match in all."""
     base = (
@@ -70,7 +74,7 @@ async def search(
     base = _apply_filters(
         base, category=category, search=search, location=location, skill=skill,
         min_experience=min_experience, max_experience=max_experience,
-        status_filter=status_filter, source_site=source_site, readiness=readiness,
+        status_filter=status_filter, source_site=source_site, readiness=readiness, origin=origin,
     )
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     column = {

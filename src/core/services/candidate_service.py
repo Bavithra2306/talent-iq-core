@@ -95,13 +95,13 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
 async def list_candidates(
     db: AsyncSession, *, category=None, search=None, location=None, skill=None,
     min_experience=None, max_experience=None, status_filter: str | None = None,
-    source_site=None, readiness: str = "ready", sort: SortField = "date_added", descending: bool = True,
+    source_site=None, readiness: str = "ready", origin: str | None = None, sort: SortField = "date_added", descending: bool = True,
     limit: int = 20, offset: int = 0,
 ) -> tuple[list[CandidateListItem], int]:
     rows, total = await candidate_repository.search(
         db, category=normalize_category(category) if category else category, search=search, location=location,
         skill=skill, min_experience=min_experience, max_experience=max_experience,
-        status_filter=status_filter, source_site=source_site, readiness=readiness, sort_column=sort, descending=descending,
+        status_filter=status_filter, source_site=source_site, readiness=readiness, origin=origin, sort_column=sort, descending=descending,
         limit=limit, offset=offset,
     )
 

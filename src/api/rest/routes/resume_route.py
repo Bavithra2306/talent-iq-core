@@ -105,6 +105,8 @@ async def list_candidates(
     source_site: str | None = None,
     readiness: str = Query(default="ready", pattern="^(ready|needs_review|unprocessable)$",
                            description="ready = usable for matching; needs_review = waiting for the recruiter; unprocessable = set aside"),
+    origin: str | None = Query(default=None, pattern="^(uploaded|sourced)$",
+                               description="uploaded = added by a recruiter; sourced = found by a sourcing run"),
     sort: SortField = "date_added",
     order: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=20, ge=1, le=100),
@@ -115,7 +117,7 @@ async def list_candidates(
     items, total = await candidate_service.list_candidates(
         db, category=category, search=search, location=location, skill=skill,
         min_experience=min_experience, max_experience=max_experience,
-        status_filter=status_filter, source_site=source_site, readiness=readiness, sort=sort,
+        status_filter=status_filter, source_site=source_site, readiness=readiness, origin=origin, sort=sort,
         descending=(order == "desc"), limit=limit, offset=offset,
     )
     return CandidateListResponse(items=items, total=total)
