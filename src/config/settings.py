@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     # Resume sourcing (all optional keys raise the free rate limits)
     github_token: str | None = None
     stackexchange_key: str | None = None
+    google_cse_api_key: str | None = None  # Google Programmable Search: the API key
+    google_cse_cx: str | None = None  # ... and the search engine id
     kaggle_username: str | None = None
     kaggle_key: str | None = None
     sourcing_user_agent: str = "TalentIQ-capstone/0.1 (resume sourcing; contact: admin)"
