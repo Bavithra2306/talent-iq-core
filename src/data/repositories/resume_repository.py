@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import CandidateStatus, JobStatus
-from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.candidate import Candidate, usable_candidate
 from src.data.models.postgres.document import Document
 from src.data.models.postgres.job import Job
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
@@ -91,7 +91,7 @@ async def count_missing_embeddings(db: AsyncSession) -> int:
     return (await db.execute(
         select(func.count(ResumeExtraction.id))
         .join(Candidate, Candidate.current_resume_id == ResumeExtraction.resume_id)
-        .where(Candidate.deleted_at.is_(None))
+        .where(usable_candidate())
         .where(~select(ResumeEmbedding.id)
                .where(ResumeEmbedding.resume_id == ResumeExtraction.resume_id)
                .exists())
@@ -103,7 +103,7 @@ async def find_resumes_missing_embeddings(db: AsyncSession) -> list[tuple[uuid.U
     rows = (await db.execute(
         select(Candidate.id, Candidate.category, ResumeExtraction)
         .join(ResumeExtraction, ResumeExtraction.resume_id == Candidate.current_resume_id)
-        .where(Candidate.deleted_at.is_(None))
+        .where(usable_candidate())
         .where(~select(ResumeEmbedding.id)
                .where(ResumeEmbedding.resume_id == ResumeExtraction.resume_id)
                .exists())

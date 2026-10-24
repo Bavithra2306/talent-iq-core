@@ -9,6 +9,7 @@ from src.api.rest.schemas.candidate_schema import (
     CandidateDetail,
     CandidateListResponse,
     CategoryCount,
+    ReadinessUpdate,
 )
 from src.api.rest.schemas.ingestion_schema import (
     BatchStatus,
@@ -102,6 +103,8 @@ async def list_candidates(
         pattern="^(new|sourced|shortlisted|approved|rejected|interview_scheduled)$",
         description="new = not matched to any job yet; otherwise the status for at least one job"),
     source_site: str | None = None,
+    readiness: str = Query(default="ready", pattern="^(ready|needs_review|unprocessable)$",
+                           description="ready = usable for matching; needs_review = waiting for the recruiter; unprocessable = set aside"),
     sort: SortField = "date_added",
     order: str = Query(default="desc", pattern="^(asc|desc)$"),
     limit: int = Query(default=20, ge=1, le=100),
@@ -112,10 +115,30 @@ async def list_candidates(
     items, total = await candidate_service.list_candidates(
         db, category=category, search=search, location=location, skill=skill,
         min_experience=min_experience, max_experience=max_experience,
-        status_filter=status_filter, source_site=source_site, sort=sort,
+        status_filter=status_filter, source_site=source_site, readiness=readiness, sort=sort,
         descending=(order == "desc"), limit=limit, offset=offset,
     )
     return CandidateListResponse(items=items, total=total)
+
+
+@ResumeRouter.get("/candidates/readiness-counts", response_model=dict[str, int], summary="Resumes per readiness")
+async def readiness_counts(
+    db: AsyncSession = Depends(get_db),
+    _: CurrentUser = Depends(recruiter_only),
+):
+    """How many resumes are ready, waiting for the recruiter, and unprocessable."""
+    return await candidate_service.readiness_counts(db)
+
+
+@ResumeRouter.put("/candidates/{candidate_id}/readiness", status_code=status.HTTP_204_NO_CONTENT, summary="Place a resume")
+async def set_readiness(
+    candidate_id: uuid.UUID,
+    body: ReadinessUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(recruiter_only),
+):
+    """The recruiter keeps the resume in the ready list or sets it aside as unprocessable. Nothing is deleted."""
+    await candidate_service.set_readiness(db, user, candidate_id, body.readiness)
 
 
 @ResumeRouter.get("/candidates/categories", response_model=list[CategoryCount])

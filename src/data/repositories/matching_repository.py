@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from src.constants.enums import EmbeddingKind
-from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.candidate import Candidate, usable_candidate
 from src.data.models.postgres.job import Job
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 from src.data.models.postgres.resume_embedding import ResumeEmbedding
@@ -37,7 +37,7 @@ def _similarity_query(job_vectors: tuple[list[float] | None, list[float] | None]
 async def find_pool(db: AsyncSession, job_vectors: tuple[list[float] | None, list[float] | None],
                     category: str | None) -> list[tuple]:
     """(candidate, extraction, skill similarity, role similarity) for every resume in the category."""
-    query = _similarity_query(job_vectors).where(Candidate.deleted_at.is_(None))
+    query = _similarity_query(job_vectors).where(usable_candidate())
     if category:
         query = query.where(Candidate.category == category)
     return [tuple(r) for r in (await db.execute(query)).all()]
@@ -46,7 +46,7 @@ async def find_pool(db: AsyncSession, job_vectors: tuple[list[float] | None, lis
 async def find_pool_by_candidates(db: AsyncSession, job_vectors: tuple[list[float] | None, list[float] | None],
                                   candidate_ids: list[uuid.UUID]) -> list[tuple]:
     """The same rows for chosen candidates, whatever their category."""
-    query = _similarity_query(job_vectors).where(Candidate.id.in_(candidate_ids), Candidate.deleted_at.is_(None))
+    query = _similarity_query(job_vectors).where(Candidate.id.in_(candidate_ids), usable_candidate())
     return [tuple(r) for r in (await db.execute(query)).all()]
 
 

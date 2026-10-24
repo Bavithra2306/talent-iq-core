@@ -1,6 +1,7 @@
 """Response models for the /candidates routes."""
 
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -34,6 +35,10 @@ class CandidateDetail(CandidateListItem):
     roles_and_years: list[dict] | dict | None = None
     extraction_model: str | None = None
     file_name: str | None = None
+
+
+class ReadinessUpdate(BaseModel):
+    readiness: Literal["ready", "unprocessable"]
 
 
 class CategoryCount(BaseModel):

@@ -25,8 +25,8 @@ async def find_batch_events(db: AsyncSession, batch_id: str) -> list[AuditLog]:
 
 
 def _apply_filters(query, *, category, search, location, skill, min_experience,
-                   max_experience, status_filter, source_site):
-    query = query.where(Candidate.deleted_at.is_(None))
+                   max_experience, status_filter, source_site, readiness):
+    query = query.where(Candidate.deleted_at.is_(None), Candidate.readiness == readiness)
     if category:
         query = query.where(Candidate.category == category)
     if search:
@@ -59,7 +59,7 @@ def _apply_filters(query, *, category, search, location, skill, min_experience,
 
 async def search(
     db: AsyncSession, *, category, search, location, skill, min_experience, max_experience,
-    status_filter, source_site, sort_column, descending: bool, limit: int, offset: int,
+    status_filter, source_site, readiness, sort_column, descending: bool, limit: int, offset: int,
 ) -> tuple[list[tuple[Candidate, list | None, str | None]], int]:
     """One page of (candidate, skills, source site) rows, and how many candidates match in all."""
     base = (
@@ -70,7 +70,7 @@ async def search(
     base = _apply_filters(
         base, category=category, search=search, location=location, skill=skill,
         min_experience=min_experience, max_experience=max_experience,
-        status_filter=status_filter, source_site=source_site,
+        status_filter=status_filter, source_site=source_site, readiness=readiness,
     )
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     column = {
@@ -119,7 +119,7 @@ async def find_detail_row(db: AsyncSession, candidate_id: uuid.UUID):
 
 async def count_by_category(db: AsyncSession) -> list[tuple[str | None, int]]:
     rows = await db.execute(
-        select(Candidate.category, func.count()).where(Candidate.deleted_at.is_(None))
+        select(Candidate.category, func.count()).where(Candidate.deleted_at.is_(None), Candidate.readiness == "ready")
         .group_by(Candidate.category).order_by(func.count().desc())
     )
     return [(c, n) for c, n in rows.all()]
@@ -127,6 +127,18 @@ async def count_by_category(db: AsyncSession) -> list[tuple[str | None, int]]:
 
 async def get_candidate(db: AsyncSession, candidate_id: uuid.UUID) -> Candidate | None:
     return await db.get(Candidate, candidate_id)
+
+
+async def count_by_readiness(db: AsyncSession) -> dict[str, int]:
+    rows = await db.execute(
+        select(Candidate.readiness, func.count()).where(Candidate.deleted_at.is_(None)).group_by(Candidate.readiness)
+    )
+    return {readiness: n for readiness, n in rows.all()}
+
+
+def set_readiness(candidate: Candidate, readiness: str, reason: str | None) -> None:
+    candidate.readiness = readiness
+    candidate.readiness_reason = reason
 
 
 def mark_deleted(candidate: Candidate, user_id: uuid.UUID, at) -> None:

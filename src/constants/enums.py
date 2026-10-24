@@ -17,6 +17,14 @@ class EmbeddingKind(str, enum.Enum):
     ROLE = "role"
 
 
+class Readiness(str, enum.Enum):
+    """Where a resume stands after extraction: usable (ready), waiting for the recruiter, or set aside."""
+
+    READY = "ready"
+    NEEDS_REVIEW = "needs_review"
+    UNPROCESSABLE = "unprocessable"
+
+
 class CandidateStatus(str, enum.Enum):
     SOURCED = "sourced"
     SHORTLISTED = "shortlisted"
@@ -64,6 +72,7 @@ class Action(str, enum.Enum):
     PARSING_FAILED = "parsing_failed"
     EXTRACTION_STARTED = "extraction_started"
     RESUME_DELETED = "resume_deleted"
+    RESUME_REVIEWED = "resume_reviewed"
     EXTRACTION_COMPLETED = "extraction_completed"
     EXTRACTION_FAILED = "extraction_failed"
     # scoring

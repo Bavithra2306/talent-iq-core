@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Uuid
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Uuid, and_
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.constants.enums import CandidateStatus
@@ -29,6 +29,10 @@ class Candidate(IdMixin, AuditMixin, Base):
         Numeric(4, 1), nullable=True
     )
 
+    # ready = usable for matching and shown in the resume list; needs_review = a required field is missing and the
+    # recruiter must decide; unprocessable = set aside (kept, never matched). Nothing is deleted either way.
+    readiness: Mapped[str] = mapped_column(String, nullable=False, default="ready", server_default="ready")
+    readiness_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     # soft delete: a deleted resume is hidden everywhere but its row, file and history stay
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
@@ -38,3 +42,8 @@ class Candidate(IdMixin, AuditMixin, Base):
         Index("ix_candidates_contact", "contact"),
         Index("ix_candidates_category", "category"),
     )
+
+
+def usable_candidate():
+    """Candidates that can be matched and shown in the lists: not deleted and ready for shortlisting."""
+    return and_(Candidate.deleted_at.is_(None), Candidate.readiness == "ready")

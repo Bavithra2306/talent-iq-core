@@ -1,25 +1,38 @@
-"""A sourced resume needs a name and a way to contact the person; otherwise it waits for the recruiter."""
+"""Every resume needs name, email, phone, skills, role and education. Experience may be missing (a fresher)."""
 
-from src.control.agents.prompts.resume_extraction import ExtractedResume
+from src.control.agents.prompts.resume_extraction import Education, ExtractedResume, Role
 from src.core.services import resume_service
 
 
 def resume(**fields) -> ExtractedResume:
-    return ExtractedResume(index=1, skills=["Python"], **fields)
+    complete = dict(name="Asha Rao", email="asha@example.com", phone="+91 98765 43210", skills=["Python"],
+                    current_title="Developer", education=[Education(degree="B.E.")])
+    return ExtractedResume(index=1, **{**complete, **fields})
 
 
-def test_name_and_email_is_enough():
-    assert resume_service.missing_required(resume(name="Asha Rao", email="asha@example.com")) is None
+def test_a_complete_resume_has_nothing_missing():
+    assert resume_service.missing_required(resume()) == []
 
 
-def test_name_and_phone_is_enough():
-    assert resume_service.missing_required(resume(name="Asha Rao", phone="+91 98765 43210")) is None
+def test_experience_is_not_required():
+    assert resume_service.missing_required(resume(total_experience_years=None)) == []
 
 
-def test_no_contact_goes_to_review():
-    assert resume_service.missing_required(resume(name="Asha Rao")) == "no email or phone number"
-    assert resume_service.missing_required(resume(name="Asha Rao", email="not an email", phone="12")) == "no email or phone number"
+def test_each_required_field_is_checked():
+    assert resume_service.missing_required(resume(name=None)) == ["name"]
+    assert resume_service.missing_required(resume(email=None)) == ["email"]
+    assert resume_service.missing_required(resume(email="not an email")) == ["email"]
+    assert resume_service.missing_required(resume(phone=None)) == ["phone number"]
+    assert resume_service.missing_required(resume(phone="12")) == ["phone number"]
+    assert resume_service.missing_required(resume(skills=[])) == ["skills"]
+    assert resume_service.missing_required(resume(current_title=None)) == ["role"]
+    assert resume_service.missing_required(resume(education=[])) == ["education"]
 
 
-def test_no_name_goes_to_review():
-    assert resume_service.missing_required(resume(email="asha@example.com")) == "no name"
+def test_a_role_in_the_work_history_counts():
+    assert resume_service.missing_required(resume(current_title=None, roles=[Role(title="Engineer")])) == []
+
+
+def test_everything_missing_is_listed():
+    empty = ExtractedResume(index=1)
+    assert resume_service.missing_required(empty) == ["name", "email", "phone number", "skills", "role", "education"]

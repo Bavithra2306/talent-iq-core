@@ -11,7 +11,7 @@ from src.api.rest.dependencies import CurrentUser
 from src.api.rest.schemas.candidate_schema import CandidateDetail, CandidateListItem, JobStatusItem
 from src.api.rest.schemas.ingestion_schema import BatchEvent, BatchStatus, RejectedFile
 from src.constants.categories import normalize_category
-from src.constants.enums import Action, ActionCategory, PipelineStage
+from src.constants.enums import Action, ActionCategory, PipelineStage, Readiness
 from src.core.exceptions import NotFoundError
 from src.core.services import resume_service
 from src.core.services.audit_service import log_event, utcnow
@@ -95,13 +95,13 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
 async def list_candidates(
     db: AsyncSession, *, category=None, search=None, location=None, skill=None,
     min_experience=None, max_experience=None, status_filter: str | None = None,
-    source_site=None, sort: SortField = "date_added", descending: bool = True,
+    source_site=None, readiness: str = "ready", sort: SortField = "date_added", descending: bool = True,
     limit: int = 20, offset: int = 0,
 ) -> tuple[list[CandidateListItem], int]:
     rows, total = await candidate_repository.search(
         db, category=normalize_category(category) if category else category, search=search, location=location,
         skill=skill, min_experience=min_experience, max_experience=max_experience,
-        status_filter=status_filter, source_site=source_site, sort_column=sort, descending=descending,
+        status_filter=status_filter, source_site=source_site, readiness=readiness, sort_column=sort, descending=descending,
         limit=limit, offset=offset,
     )
 
@@ -177,6 +177,26 @@ async def delete_candidate(db: AsyncSession, user: CurrentUser, candidate_id: uu
     await log_event(user_id=user.id, category=ActionCategory.EXTRACTION, action=Action.RESUME_DELETED,
                     input_data={"candidate_id": str(candidate.id), "name": candidate.name},
                     output_data="Deleted by the recruiter.")
+
+
+async def readiness_counts(db: AsyncSession) -> dict[str, int]:
+    counts = await candidate_repository.count_by_readiness(db)
+    return {r.value: counts.get(r.value, 0) for r in Readiness}
+
+
+async def set_readiness(db: AsyncSession, user: CurrentUser, candidate_id: uuid.UUID, readiness: str) -> None:
+    """The recruiter decides: keep the resume in the ready list, or set it aside as unprocessable.
+    The resume is only moved; nothing in it is changed or deleted."""
+    candidate = await candidate_repository.get_candidate(db, candidate_id)
+    if candidate is None or candidate.deleted_at is not None:
+        raise NotFoundError("Candidate not found.")
+    reason = candidate.readiness_reason if readiness != Readiness.READY.value else None
+    candidate_repository.set_readiness(candidate, readiness, reason)
+    candidate.updated_by = user.id
+    await db.commit()
+    await log_event(user_id=user.id, category=ActionCategory.EXTRACTION, action=Action.RESUME_REVIEWED,
+                    input_data={"candidate_id": str(candidate.id), "name": candidate.name},
+                    output_data={"readiness": readiness})
 
 
 async def category_counts(db: AsyncSession) -> list[dict]:

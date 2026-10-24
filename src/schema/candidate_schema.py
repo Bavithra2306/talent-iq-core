@@ -29,3 +29,5 @@ class CandidateUpdate(CandidateBase):
 
 class CandidateRead(CandidateBase, AuditRead):
     current_resume_id: uuid.UUID
+    readiness: str = "ready"
+    readiness_reason: str | None = None

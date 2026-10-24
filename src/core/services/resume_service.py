@@ -30,6 +30,7 @@ from src.constants.enums import (
     EmbeddingKind,
     FileType,
     PipelineStage,
+    Readiness,
 )
 from src.control.agents.prompts import resume_check as check_prompt
 from src.control.agents.prompts import resume_extraction as prompt
@@ -75,7 +76,6 @@ class BatchItem:
     document_id: uuid.UUID
     filename: str
     storage_key: str
-    sourced: bool = False  # found by sourcing: it must show a name and a way to contact the person
 
 
 @dataclass
@@ -188,7 +188,7 @@ async def accept_uploads(
             elif document.id in extracted_ids:
                 rejected.append({"filename": name, "reason": "Already uploaded"})
             else:  # earlier attempt failed part-way: process it again
-                items.append(BatchItem(document.id, name, document.file_path, sourced=document.source_type == "sourced"))
+                items.append(BatchItem(document.id, name, document.file_path))
             continue
 
         stored_filename, key = storage.save(RESUME_FOLDER, name, upload.data)
@@ -206,7 +206,7 @@ async def accept_uploads(
             batch_id=batch_id,
         )
         await resume_repository.add_document(db, document)
-        items.append(BatchItem(document.id, name, key, sourced=source_type == "sourced"))
+        items.append(BatchItem(document.id, name, key))
     await db.commit()
 
     if not items:
@@ -237,6 +237,19 @@ async def log_stage(batch_id: str, user_id: uuid.UUID, stage: PipelineStage, sta
     await log_event(
         user_id=user_id, category=ActionCategory.EXTRACTION, stage=stage, action=action,
         input_data=_batch_input(batch_id), output_data=output or None,
+    )
+
+
+async def hold_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: BatchItem,
+                    missing: list[str]) -> None:
+    """A resume that lacks required fields: kept, and left for the recruiter to place in the ready or unprocessable list."""
+    reason = f"Cannot process this resume: missing {', '.join(missing)}. Waiting for your review."
+    state.needs_review += 1
+    state.failures.append({"filename": item.filename, "reason": reason})
+    await log_event(
+        user_id=user_id, category=ActionCategory.EXTRACTION, action=Action.EXTRACTION_FAILED,
+        input_data=_batch_input(batch_id, document_id=str(item.document_id), filename=item.filename),
+        output_data=reason,
     )
 
 
@@ -300,7 +313,7 @@ async def retry_failed(db: AsyncSession, user: CurrentUser) -> UploadResult:
     documents = [d for d in await resume_repository.find_unread_resume_documents(db, DOC_TYPE_RESUME) if d.id not in running]
     if not documents:
         return UploadResult(batch_id=None, accepted=[], rejected=[])
-    items = [BatchItem(d.id, d.original_filename or d.stored_filename, d.file_path, sourced=d.source_type == "sourced") for d in documents]
+    items = [BatchItem(d.id, d.original_filename or d.stored_filename, d.file_path) for d in documents]
     batch_id = str(uuid.uuid4())
     await log_event(
         user_id=user.id, category=ActionCategory.EXTRACTION, stage=PipelineStage.CREATED,
@@ -317,14 +330,23 @@ async def retry_failed(db: AsyncSession, user: CurrentUser) -> UploadResult:
     )
 
 
-def missing_required(result: prompt.ExtractedResume) -> str | None:
-    """What a sourced resume lacks, or None when it has what we need: a name and a way to contact the person
-    (an e-mail address or a phone number). Public datasets and profiles often hide these on purpose."""
+def missing_required(result: prompt.ExtractedResume) -> list[str]:
+    """The required fields a resume lacks (empty list when it has them all). Every resume needs: name, email,
+    phone number, skills, role and education. Experience is not required: none means a fresher with 0 years."""
+    missing = []
     if not (result.name or "").strip():
-        return "no name"
-    if not _clean_email(result.email) and len(_digits(result.phone)) < 7:
-        return "no email or phone number"
-    return None
+        missing.append("name")
+    if not _clean_email(result.email):
+        missing.append("email")
+    if len(_digits(result.phone)) < 7:
+        missing.append("phone number")
+    if not clean_skills(result.skills):
+        missing.append("skills")
+    if not ((result.current_title or "").strip() or any((r.title or "").strip() for r in result.roles)):
+        missing.append("role")
+    if not result.education:
+        missing.append("education")
+    return missing
 
 
 def has_resume_details(result: prompt.ExtractedResume) -> bool:
@@ -414,10 +436,6 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
                 await fail_item(batch_id, user_id, state, item,
                                 "No resume details found (name, skills or work history). "
                                 "Waiting for your review.", needs_review=True)
-            elif item.sourced and (missing := missing_required(result)):
-                await fail_item(batch_id, user_id, state, item,
-                                f"Cannot process this resume: {missing} was found. Waiting for your review.",
-                                needs_review=True)
             else:
                 valid.append((item, parsed, result, model))
         if not valid:
@@ -429,7 +447,11 @@ async def process_group(batch_id: str, user_id: uuid.UUID, state: BatchProgress,
             created = [await _save_resume(db, user_id, item, parsed, result, model)
                        for item, parsed, result, model in valid]
             await db.commit()
-        state.saved += len(valid)
+        held = [(item, missing_required(result)) for item, _, result, _ in valid]
+        held = [(item, missing) for item, missing in held if missing]
+        for item, missing in held:  # saved, but waiting for the recruiter to decide where they belong
+            await hold_item(batch_id, user_id, state, item, missing)
+        state.saved += len(valid) - len(held)
         state.new_candidates += sum(created)
         state.updated_candidates += len(created) - sum(created)
     except Exception as exc:
@@ -462,6 +484,11 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
     email = _clean_email(result.email)
     phone = _short(result.phone, 40)
     years = _years(result.total_experience_years)
+    if years is None:
+        years = Decimal("0")  # no experience shown: a fresher with 0 years
+    missing = missing_required(result)
+    readiness = Readiness.NEEDS_REVIEW.value if missing else Readiness.READY.value
+    readiness_reason = f"Missing {', '.join(missing)}" if missing else None
 
     candidate = None
     if email:
@@ -477,6 +504,8 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
         "current_title": _short(result.current_title, 120),
         "category": normalize_category(result.category),
         "total_years_experience": years,
+        "readiness": readiness,
+        "readiness_reason": readiness_reason,
     }
     created = candidate is None
     if candidate is None:
@@ -490,6 +519,7 @@ async def _save_resume(db: AsyncSession, user_id: uuid.UUID, item: BatchItem, pa
         for key, value in fields.items():
             if value is not None:
                 setattr(candidate, key, value)
+        candidate.readiness_reason = readiness_reason  # cleared when nothing is missing any more
         candidate.current_resume_id = document.id
         candidate.updated_by = user_id
         candidate.deleted_at, candidate.deleted_by = None, None  # a new resume brings a deleted person back

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import Action, CandidateStatus
 from src.data.models.postgres.audit_log import AuditLog
-from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.candidate import Candidate, usable_candidate
 from src.data.models.postgres.document import Document
 from src.data.models.postgres.job import Job
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
@@ -55,7 +55,7 @@ async def find_entries_to_share(db: AsyncSession, job_id: uuid.UUID,
                                 entry_ids: list[uuid.UUID] | None) -> list[MatchingShortlisting]:
     """The chosen entries of a job, or all its shortlisted entries when none were chosen."""
     query = (select(MatchingShortlisting).join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-             .where(MatchingShortlisting.job_id == job_id, Candidate.deleted_at.is_(None)))
+             .where(MatchingShortlisting.job_id == job_id, usable_candidate()))
     if entry_ids:
         query = query.where(MatchingShortlisting.id.in_(entry_ids))
     else:
@@ -69,7 +69,7 @@ async def find_shared_with(db: AsyncSession, user_id: uuid.UUID, job_id: uuid.UU
     query = (select(MatchingShortlisting)
              .join(Job, Job.id == MatchingShortlisting.job_id)
              .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
-             .where(MatchingShortlisting.shared_to == user_id, Job.deleted_at.is_(None), Candidate.deleted_at.is_(None))
+             .where(MatchingShortlisting.shared_to == user_id, Job.deleted_at.is_(None), usable_candidate())
              .order_by(MatchingShortlisting.job_id, MatchingShortlisting.total_score.desc(), MatchingShortlisting.id))
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)
@@ -84,7 +84,7 @@ async def find_approved_shared_with(db: AsyncSession, user_id: uuid.UUID,
              .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
              .where(MatchingShortlisting.shared_to == user_id,
                     MatchingShortlisting.status == CandidateStatus.APPROVED,
-                    Job.deleted_at.is_(None), Candidate.deleted_at.is_(None)))
+                    Job.deleted_at.is_(None), usable_candidate()))
     if job_id:
         query = query.where(MatchingShortlisting.job_id == job_id)
     return list((await db.execute(query)).scalars())

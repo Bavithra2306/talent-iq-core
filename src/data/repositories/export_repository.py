@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.constants.enums import CandidateStatus
-from src.data.models.postgres.candidate import Candidate
+from src.data.models.postgres.candidate import Candidate, usable_candidate
 from src.data.models.postgres.matching_shortlisting import MatchingShortlisting
 
 
@@ -19,7 +19,7 @@ async def find_scored_rows(
     query = (select(MatchingShortlisting, Candidate)
              .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
              .where(MatchingShortlisting.job_id == job_id, MatchingShortlisting.total_score.is_not(None),
-                    Candidate.deleted_at.is_(None)))
+                    usable_candidate()))
     if shared_to is not None:
         query = query.where(MatchingShortlisting.shared_to == shared_to)
     elif statuses is not None:
