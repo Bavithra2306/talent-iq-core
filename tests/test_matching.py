@@ -1,6 +1,9 @@
 """Skill scoring, the LLM level scale, and the prompt the scoring LLM sees."""
 
+from types import SimpleNamespace
+
 from src.control.agents.prompts import match_scoring
+from src.control.agents.prompts.resume_extraction import Role
 from src.core.services import matching_service as svc
 
 
@@ -62,13 +65,11 @@ def test_job_signature_changes_when_skills_change():
 
 
 def test_resume_roles_keep_plausible_years_only():
-    from src.control.agents.prompts.resume_extraction import Role
     role = Role(title="Dev", start_year="Jan 2019", end_year="Present", current="true")
     assert (role.start_year, role.end_year, role.current) == (2019, None, True)
 
 
 def test_role_lines_show_industry_and_dates():
-    from types import SimpleNamespace
     extraction = SimpleNamespace(roles_and_years=[
         {"title": "Analyst", "industry": "Banking", "years": 2, "start_year": 2024, "current": True},
         {"title": "Intern", "years": 0.5}])

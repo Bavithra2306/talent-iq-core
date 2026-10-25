@@ -191,6 +191,8 @@ async def log_stage(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, state: R
 
 async def _run(run_id: str, user_id: uuid.UUID, job_id: uuid.UUID, request: ShortlistRunRequest) -> None:
     """Runs the matching graph (src/control/agents/matching_graph.py) for one run."""
+    # Imported here, not at the top: matching_graph imports this module, so a top-level
+    # import would be circular and the app would fail to start.
     from src.control.agents.matching_graph import matching_graph
 
     state = progress[run_id]

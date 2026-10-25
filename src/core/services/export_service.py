@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Literal
 
+import xlsxwriter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser, Role
@@ -86,8 +87,6 @@ def _csv(table: list[list]) -> bytes:
 
 
 def _xlsx(table: list[list], job: Job, weights: dict, scope: str, exported_by: str) -> bytes:
-    import xlsxwriter
-
     buffer = io.BytesIO()
     book = xlsxwriter.Workbook(buffer, {"in_memory": True})
     head = book.add_format({"bold": True, "bg_color": "#1F3864", "font_color": "white",

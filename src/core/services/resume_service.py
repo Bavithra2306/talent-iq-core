@@ -279,6 +279,8 @@ async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, ite
 
 async def _run_batch(batch_id: str, user_id: uuid.UUID, items: list[BatchItem]) -> None:
     """Runs the ingestion graph (src/control/agents/ingestion_graph.py) for one batch."""
+    # Imported here, not at the top: ingestion_graph imports this module, so a top-level
+    # import would be circular and the app would fail to start.
     from src.control.agents.ingestion_graph import ingestion_graph
 
     state = progress[batch_id]

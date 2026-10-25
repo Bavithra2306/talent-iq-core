@@ -18,6 +18,8 @@ import re
 import uuid
 from pathlib import Path
 
+from google.cloud import storage as gcs
+
 from src.config.settings import settings
 
 logger = logging.getLogger("talentiq.storage")
@@ -66,8 +68,6 @@ class GcsStorage:
 
     def _get_bucket(self):
         if self._bucket is None:
-            from google.cloud import storage as gcs
-
             client = (gcs.Client.from_service_account_json(self.credentials_file)
                       if self.credentials_file else gcs.Client())
             self._bucket = client.bucket(self.bucket_name)

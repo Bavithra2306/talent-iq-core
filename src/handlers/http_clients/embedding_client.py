@@ -16,6 +16,8 @@ import openai
 from openai import AsyncOpenAI
 
 from src.config.settings import settings
+from src.data.clients.postgres import AsyncSessionLocal
+from src.data.repositories import job_embedding_repository, resume_repository
 
 logger = logging.getLogger("talentiq.embeddings")
 
@@ -61,9 +63,6 @@ def format_time(moment: datetime) -> str:
 
 async def _used_today_from_db() -> int:
     """Texts embedded today according to the database (survives restarts)."""
-    from src.data.clients.postgres import AsyncSessionLocal
-    from src.data.repositories import job_embedding_repository, resume_repository
-
     start = datetime.combine(_quota_today(), time(0), QUOTA_TZ)
     async with AsyncSessionLocal() as db:
         resumes = await resume_repository.count_embeddings_since(db, start)

@@ -1,7 +1,12 @@
 """Runs inside Docling worker processes (kept free of app imports so workers start fast)."""
 
 import os
+import time
 from io import BytesIO
+
+# torch, Docling and pypdf are imported inside the functions on purpose. The API process also
+# imports this module (to hand work to the worker pool), and loading Docling there at start-up
+# costs about 20 s and 360 MB. The worker processes load them on first use instead.
 
 # Below this many characters a PDF is treated as scanned and re-read with OCR.
 MIN_TEXT_CHARS = 50
@@ -20,8 +25,6 @@ def init_worker(threads: int) -> None:
 
 def noop(seconds: float) -> int:
     """Used to start every worker process at boot."""
-    import time
-
     time.sleep(seconds)
     return os.getpid()
 
