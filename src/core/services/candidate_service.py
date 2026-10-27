@@ -55,7 +55,7 @@ async def get_batch_status(db: AsyncSession, batch_id: str) -> BatchStatus:
     if pending:
         quota = await resume_service.embedding_service.quota_status()
         note = (f"Daily embedding quota reached; the remaining {pending} resume(s) get vectors "
-                f"after {quota['resumes_at']}. Matching still works meanwhile."
+                f"after {quota['resumes_at']}. They join matching once they have them."
                 if quota["paused"] else f"{pending} resume(s) are waiting for embeddings.")
     live = resume_service.progress.get(batch_id)
     failed_rows = [
