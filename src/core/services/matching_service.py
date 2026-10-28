@@ -397,7 +397,7 @@ def _reason(p: Pending, exp_note: str, edu_note: str) -> list[str]:
         if missing:
             text += f"; missing: {', '.join(missing)}"
         lines.append(text)
-    nice = p.nice or []
+    nice = p.nice or [] 
     if nice:
         have = [i["jd_skill"] for i in nice if i["level"] >= 75]
         lines.append(f"Nice-to-have (not scored): {len(have)} of {len(nice)}" + (f" ({', '.join(have)})" if have else ""))

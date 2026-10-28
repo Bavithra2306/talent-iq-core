@@ -65,9 +65,13 @@ async def read_files(state: IngestionState) -> dict:
         progress.parsed += 1
         if isinstance(result, Exception):
             logger.warning("parse failed for %s: %s", item.filename, result)
-            await svc.fail_item(batch_id, user_id, progress, item, "The file could not be read.")
+            # Retrying can't fix an unreadable file, so it goes to the review queue, not "Retry failed".
+            await svc.fail_item(batch_id, user_id, progress, item,
+                                "The file could not be read (it may be damaged or password-protected).",
+                                review_file=True)
         elif not result.text.strip():
-            await svc.fail_item(batch_id, user_id, progress, item, "No text could be read from the file.")
+            await svc.fail_item(batch_id, user_id, progress, item, "No text could be read from the file.",
+                                review_file=True)
         else:
             readable.append((item, result))
     return {"readable": readable}

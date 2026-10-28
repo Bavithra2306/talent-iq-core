@@ -58,7 +58,14 @@ async def accept_as_resume(db: AsyncSession, user: CurrentUser, document_id: uui
     """The recruiter says it is a resume: read it, extract the fields and save the candidate."""
     document = await _get(db, document_id)
     data = storage.read(document.file_path)
-    parsed = await parser.parse(data, document.original_filename or "resume")
+    try:
+        parsed = await parser.parse(data, document.original_filename or "resume")
+    except Exception as exc:
+        logger.warning("could not read %s: %s", document.original_filename, exc)
+        raise UnprocessableError(
+            "This file could not be read (it may be damaged or password-protected). "
+            "Delete it, or upload a fixed copy."
+        ) from exc
     if not parsed.text.strip():
         raise UnprocessableError("No text could be read from this file.")
     try:

@@ -21,7 +21,7 @@ JobRouter = APIRouter(prefix="/jobs", tags=["Jobs"])
 # Recruiters and hiring managers can create and edit JDs.
 can_manage_jobs = require_roles(Role.RECRUITER, Role.HIRING_MANAGER)
 
-
+#For extract JD 
 @JobRouter.post("/extract", response_model=JobExtractResponse)
 async def extract_jd(
     file: UploadFile = File(..., description="JD as PDF, scanned PDF, DOCX, JPG or PNG (max 10 MB)"),

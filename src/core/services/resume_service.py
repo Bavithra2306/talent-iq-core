@@ -254,7 +254,14 @@ async def hold_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, ite
 
 
 async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, item: BatchItem,
-                reason: str, *, needs_review: bool = False) -> None:
+                reason: str, *, needs_review: bool = False, review_file: bool | None = None) -> None:
+    """Record a file that did not become a candidate.
+
+    ``needs_review`` counts it as "to review" instead of "failed". ``review_file`` moves the file to
+    the review queue (defaults to ``needs_review``): used for files that can never be read, so they
+    don't stay in "Retry failed" forever and the recruiter can check or delete them.
+    """
+    move_to_review = needs_review if review_file is None else review_file
     if needs_review:
         state.needs_review += 1
     else:
@@ -265,8 +272,8 @@ async def fail_item(batch_id: str, user_id: uuid.UUID, state: BatchProgress, ite
         input_data=_batch_input(batch_id, document_id=str(item.document_id), filename=item.filename),
         output_data=reason,
     )
-    if needs_review:
-        # The AI thinks it is not a resume: keep the file for the recruiter to check.
+    if move_to_review:
+        # Not a resume, or a file that can't be read: keep it for the recruiter to check or delete.
         try:
             async with AsyncSessionLocal() as db:
                 document = await resume_repository.get_document(db, item.document_id)
@@ -365,7 +372,7 @@ async def _check_group(texts: list[str]) -> dict[int, str]:
         max_tokens=min(4000, 40 * len(texts) + 200),
     )
     return {r.index: r.document_type for r in batch.results if 1 <= r.index <= len(texts)}
-
+ 
 
 async def check_documents(texts: list[str]) -> list[str | None]:
     """Step 1 for any number of texts: "resume", "jd", "other", or None when the AI could
