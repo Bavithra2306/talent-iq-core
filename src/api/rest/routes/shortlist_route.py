@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.rest.dependencies import CurrentUser, Role, require_roles
 from src.api.rest.schemas.shortlist_schema import (
+    DecisionSummary,
     LogListResponse,
     ParseFilterRequest,
     ParseFilterResponse,
@@ -147,6 +148,16 @@ async def update_weights(
         db, user, job_id, Weights(body.skill_pct, body.role_pct, body.exp_pct, body.edu_pct))
     items, total, _ = await shortlist_service.list_entries(db, job_id=job_id)
     return ShortlistListResponse(items=items, total=total, weights=weights.as_dict())
+
+
+@ShortlistRouter.get("/logs/decisions", response_model=DecisionSummary)
+async def decisions(
+    job_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db), _: CurrentUser = Depends(log_readers),
+):
+    """How many shortlisted candidates hiring managers approved, rejected or haven't decided yet,
+    per job, plus the latest decisions."""
+    return await shortlist_service.decision_summary(db, job_id)
 
 
 @ShortlistRouter.get("/logs", response_model=LogListResponse)

@@ -13,6 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.rest.dependencies import CurrentUser
 from src.api.rest.schemas.ingestion_schema import BatchEvent
 from src.api.rest.schemas.shortlist_schema import (
+    DecisionCounts,
+    DecisionEvent,
+    DecisionSummary,
+    JobDecisions,
     LogEntry,
     ParseFilterResponse,
     RunStatus,
@@ -295,6 +299,62 @@ async def list_logs(
                  input_data=r.input_data, output_data=r.output_data, duration_ms=r.duration)
         for r in rows
     ], total
+
+
+# ---------- hiring manager decisions ----------
+
+def _add_count(counts: DecisionCounts, status: CandidateStatus, n: int) -> None:
+    counts.shared += n
+    if status in (CandidateStatus.APPROVED, CandidateStatus.INTERVIEW_SCHEDULED):
+        counts.approved += n
+    elif status == CandidateStatus.REJECTED:
+        counts.rejected += n
+    else:
+        counts.waiting += n
+
+
+def summarize_decisions(
+    rows: list[tuple[uuid.UUID, str, uuid.UUID, CandidateStatus, int]],
+) -> tuple[DecisionCounts, list[JobDecisions]]:
+    """Totals and one line per job, from (job, title, hiring manager, status, count) rows.
+
+    Counted from each candidate's current status, so a decision that was changed counts once.
+    """
+    total = DecisionCounts()
+    jobs: dict[uuid.UUID, JobDecisions] = {}
+    for job_id, title, manager_id, status, n in rows:
+        job = jobs.setdefault(job_id, JobDecisions(job_id=job_id, job_title=title))
+        if manager_id not in job.hiring_manager_ids:
+            job.hiring_manager_ids.append(manager_id)
+        _add_count(job, status, n)
+        _add_count(total, status, n)
+    return total, sorted(jobs.values(), key=lambda j: (-j.shared, j.job_title))
+
+
+def _event_detail(event) -> tuple[uuid.UUID | None, str | None]:
+    """The candidate id and the hiring manager's comment saved with an approve / reject event."""
+    try:
+        data = json.loads(event.input_data or "{}")
+        return uuid.UUID(str(data.get("candidate_id"))), data.get("comment")
+    except (ValueError, AttributeError):
+        return None, None
+
+
+async def decision_summary(db: AsyncSession, job_id: uuid.UUID | None, limit: int = 20) -> DecisionSummary:
+    total, jobs = summarize_decisions(await shortlist_repository.count_shared_by_status(db, job_id))
+    events = await shortlist_repository.find_decision_events(db, job_id, limit)
+    details = [_event_detail(e) for e in events]
+    names, titles = await shortlist_repository.find_names(
+        db, [c for c, _ in details if c], list({e.job_id for e in events if e.job_id}))
+    recent = [
+        DecisionEvent(
+            at=e.created_at, decided_by=e.user_id, job_id=e.job_id, job_title=titles.get(e.job_id),
+            candidate_name=names.get(candidate_id) if candidate_id else None, comment=comment,
+            decision="approved" if e.actions == Action.CANDIDATE_APPROVED else "rejected",
+        )
+        for e, (candidate_id, comment) in zip(events, details, strict=True)
+    ]
+    return DecisionSummary(**total.model_dump(), jobs=jobs, recent=recent)
 
 
 # ---------- natural-language filter ----------

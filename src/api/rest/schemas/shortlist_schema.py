@@ -135,6 +135,36 @@ class LogListResponse(BaseModel):
     total: int
 
 
+class DecisionCounts(BaseModel):
+    """Candidates shared with hiring managers and where they stand now."""
+    shared: int = 0
+    approved: int = 0  # includes "interview scheduled"
+    rejected: int = 0
+    waiting: int = 0
+
+
+class JobDecisions(DecisionCounts):
+    job_id: uuid.UUID
+    job_title: str
+    hiring_manager_ids: list[uuid.UUID] = []
+
+
+class DecisionEvent(BaseModel):
+    at: datetime
+    decided_by: uuid.UUID | None = None
+    job_id: uuid.UUID | None = None
+    job_title: str | None = None
+    candidate_name: str | None = None
+    decision: Literal["approved", "rejected"]
+    comment: str | None = None
+
+
+class DecisionSummary(DecisionCounts):
+    """Activity log: how many shortlisted candidates hiring managers approved or rejected."""
+    jobs: list[JobDecisions] = []
+    recent: list[DecisionEvent] = []
+
+
 class NotesUpdate(BaseModel):
     notes: str | None = Field(default=None, max_length=2000, description="e.g. 'strong backend, overqualified'")
 

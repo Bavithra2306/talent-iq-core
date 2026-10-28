@@ -6,7 +6,7 @@ from datetime import datetime
 from sqlalchemy import String, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.constants.enums import CandidateStatus, PipelineStage
+from src.constants.enums import Action, CandidateStatus, PipelineStage
 from src.data.models.postgres.audit_log import AuditLog
 from src.data.models.postgres.candidate import Candidate, usable_candidate
 from src.data.models.postgres.job import Job
@@ -114,3 +114,38 @@ async def search_logs(
         query.order_by(AuditLog.created_at.desc(), AuditLog.id).limit(limit).offset(offset)
     )).scalars().all()
     return list(rows), total
+
+
+async def count_shared_by_status(
+    db: AsyncSession, job_id: uuid.UUID | None,
+) -> list[tuple[uuid.UUID, str, uuid.UUID, CandidateStatus, int]]:
+    """Candidates shared with a hiring manager, counted per job, hiring manager and current status."""
+    query = (select(MatchingShortlisting.job_id, Job.title, MatchingShortlisting.shared_to,
+                    MatchingShortlisting.status, func.count())
+             .join(Job, Job.id == MatchingShortlisting.job_id)
+             .join(Candidate, Candidate.id == MatchingShortlisting.candidate_id)
+             .where(MatchingShortlisting.shared_to.is_not(None), Job.deleted_at.is_(None), usable_candidate())
+             .group_by(MatchingShortlisting.job_id, Job.title, MatchingShortlisting.shared_to,
+                       MatchingShortlisting.status))
+    if job_id:
+        query = query.where(MatchingShortlisting.job_id == job_id)
+    return [tuple(r) for r in (await db.execute(query)).all()]
+
+
+async def find_decision_events(db: AsyncSession, job_id: uuid.UUID | None, limit: int) -> list[AuditLog]:
+    """The latest approve / reject clicks by hiring managers, newest first."""
+    query = select(AuditLog).where(AuditLog.actions.in_((Action.CANDIDATE_APPROVED, Action.CANDIDATE_REJECTED)))
+    if job_id:
+        query = query.where(AuditLog.job_id == job_id)
+    return list((await db.execute(
+        query.order_by(AuditLog.created_at.desc(), AuditLog.id).limit(limit)
+    )).scalars().all())
+
+
+async def find_names(db: AsyncSession, candidate_ids: list[uuid.UUID],
+                     job_ids: list[uuid.UUID]) -> tuple[dict[uuid.UUID, str | None], dict[uuid.UUID, str]]:
+    """Candidate names and job titles by id, for the decisions list."""
+    candidates = dict((await db.execute(
+        select(Candidate.id, Candidate.name).where(Candidate.id.in_(candidate_ids)))).all()) if candidate_ids else {}
+    jobs = dict((await db.execute(select(Job.id, Job.title).where(Job.id.in_(job_ids)))).all()) if job_ids else {}
+    return candidates, jobs
